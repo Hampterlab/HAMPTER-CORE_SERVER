@@ -92,6 +92,31 @@ python run_manager.py
 
 ## Features
 
+### MCP Control Interface
+HAMPTER exposes a compact MCP interface for LLM control:
+
+- `hampter_ops`: operation executor (`flow` + `payload`)
+- `hampter_debug`: diagnostics (`summary|validate|state`)
+
+`hampter_ops` is designed as a 2-step flow:
+
+1. Call with `flow` only to get `payload_template` and required fields
+2. Send the same `flow` with filled `payload` to execute
+
+Available `flow` values:
+- `run_device_tool`
+- `run_tool_batch`
+- `add_port_route`
+- `remove_port_route`
+- `edit_port_route`
+- `save_tool_batch`
+- `delete_tool_batch`
+- `set_device_projection`
+- `set_tool_projection`
+- `refresh_runtime`
+
+---
+
 ### Tool Projection
 Rename, change descriptions, or disable device tools to make them **LLM-friendly**.
 
@@ -146,7 +171,7 @@ Supports **transforms**:
 
 ---
 
-### Virtual Tool
+### Tool Batch (Virtual Tool)
 **Bundle multiple tools into one** and execute them in parallel.
 
 Example: "Morning Routine" = Turn on lights + Start coffee + Play music
@@ -168,6 +193,11 @@ Example: "Morning Routine" = Turn on lights + Start coffee + Play music
 **Planned:** Scheduling support.
 
 **Config:** `config/virtual_tools.json`
+
+Use `hampter_ops` with:
+- `save_tool_batch` to create/update
+- `delete_tool_batch` to delete
+- `run_tool_batch` to execute
 
 ---
 
@@ -207,6 +237,7 @@ core_server/
 │   ├── mqtt.py           # MQTT handling
 │   ├── tool_projection.py# Tool Projection
 │   ├── virtual_tool.py   # Virtual Tool
+│   ├── ops_hub.py        # hampter_ops/hampter_debug flow dispatcher
 │   └── ipc.py            # IPC server
 ├── mcp_manager/          # Web UI
 ├── port_routing.py       # Port Routing

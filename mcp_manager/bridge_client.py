@@ -33,13 +33,14 @@ class BridgeAPIClient:
             log(f"[BRIDGE_API] Error getting routing: {e}")
             return {"outports": [], "inports": [], "matrix": {}, "connection_count": 0}
     
-    def connect_ports(self, source: str, target: str, transform: dict = None, description: str = "") -> Dict[str, Any]:
+    def connect_ports(self, source: str, target: str, transform: dict = None, description: str = "", enabled: bool = True) -> Dict[str, Any]:
         try:
             response = requests.post(f"{self.base_url}/routing/connect", json={
                 "source": source,
                 "target": target,
                 "transform": transform or {},
-                "description": description
+                "description": description,
+                "enabled": enabled
             }, timeout=10)
             response.raise_for_status()
             return response.json()

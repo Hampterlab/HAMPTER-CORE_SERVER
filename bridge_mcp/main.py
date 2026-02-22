@@ -126,9 +126,7 @@ def main():
             ctx.virtual_tool_store.reload_config()
             
             # 2. Reset and Re-register tools
-            server.reset_tools()
-            server.register_all_announced_devices()
-            server.register_virtual_tools()
+            server.reload_all_tools()
             
             # 3. Notify MCP clients (optional, if supported)
             # server.mcp.send_notification("notifications/tools/list_changed")
@@ -189,8 +187,6 @@ def main():
         """Delete a virtual tool"""
         success = ctx.virtual_tool_store.delete_virtual_tool(name)
         if success:
-            server.reset_tools()
-            server.register_all_announced_devices()
             server.register_virtual_tools()
             return {"ok": True, "message": f"Virtual tool '{name}' deleted"}
         raise HTTPException(HTTPStatus.NOT_FOUND, "virtual tool not found")

@@ -12,6 +12,23 @@
           "tool": "play_audio_Taiga"
         }
       ]
+    },
+    "vibe_led": {
+      "description": "LED 컨트롤 가상 툴",
+      "bindings": [
+        {
+          "device_id": "dev-8B52D8",
+          "tool": "create_pattern"
+        },
+        {
+          "device_id": "dev-8B52D8",
+          "tool": "change_slot"
+        },
+        {
+          "device_id": "dev-8B52D8",
+          "tool": "slot_status"
+        }
+      ]
     }
   },
   "global": {

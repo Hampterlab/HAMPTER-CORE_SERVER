@@ -118,7 +118,8 @@ def connect_ports(data: dict):
         data.get("source"), 
         data.get("target"), 
         data.get("transform"), 
-        data.get("description")
+        data.get("description"),
+        data.get("enabled", True)
     )
 
 @app.post("/api/routing/disconnect")

@@ -11,11 +11,15 @@ class DeviceStore:
         self._lock = threading.Lock()
         self.tool_registry = tool_registry
         self.on_announce_callbacks = []
+        self.on_status_callbacks = []
         self.file_path = "config/devices.json"
         self._load()
 
     def register_on_announce_callback(self, callback):
         self.on_announce_callbacks.append(callback)
+
+    def register_on_status_callback(self, callback):
+        self.on_status_callbacks.append(callback)
 
     def upsert_announce(self, device_id: str, msg: Dict[str, Any], protocol: str = "mqtt"):
         with self._lock:
@@ -39,13 +43,22 @@ class DeviceStore:
                 log(f"[DEVICE] Error in announce callback: {e}")
 
     def update_status(self, device_id: str, msg: Dict[str, Any]):
+        prev_online = None
+        new_online = bool(msg.get("online", True))
         with self._lock:
             d = self._by_id.setdefault(device_id, {"device_id": device_id})
-            d["online"] = bool(msg.get("online", True))
+            prev_online = d.get("online")
+            d["online"] = new_online
             d["uptime_ms"] = msg.get("uptime_ms")
             d["rssi"] = msg.get("rssi")
             d["last_status"] = msg
             d["last_seen"] = now_iso()
+
+        for callback in self.on_status_callbacks:
+            try:
+                callback(device_id, prev_online, new_online, msg)
+            except Exception as e:
+                log(f"[DEVICE] Error in status callback: {e}")
 
     def get(self, device_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:

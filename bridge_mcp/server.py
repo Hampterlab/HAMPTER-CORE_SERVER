@@ -1,5 +1,6 @@
 import json
-from typing import List, Union, Any
+import threading
+from typing import List, Union, Any, Dict, Set
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, Resource
 
@@ -9,6 +10,7 @@ from .tool_projection import ToolProjectionStore
 from .tool_registry import DynamicToolRegistry
 from .command import CommandWaiter, publish_cmd
 from .mqtt import get_mqtt_pub_client, publish_to_inport
+from .ops_hub import HampterOpsHub
 from port_routing import PortStore, RoutingMatrix
 
 class BridgeServer:
@@ -37,12 +39,107 @@ class BridgeServer:
         self.virtual_tool_store = virtual_tool_store
         self.virtual_tool_executor = virtual_tool_executor
         self._registered_virtual_tools = set()  # Track registered virtual tool names
+        self._dynamic_tool_names_by_device: Dict[str, Set[str]] = {}
+        self._sync_lock = threading.Lock()
+        self.ops_hub = HampterOpsHub(
+            device_store=self.device_store,
+            projection_store=self.projection_store,
+            routing_matrix=self.routing_matrix,
+            virtual_tool_store=self.virtual_tool_store,
+            virtual_tool_executor=self.virtual_tool_executor,
+            port_store=self.port_store,
+            execute_device_tool=self._execute_device_tool_raw,
+            sync_dynamic_tools=self.register_all_announced_devices,
+            sync_virtual_tools=self.register_virtual_tools,
+            reload_all=self.reload_all_tools,
+        )
         
         self.setup_resources()
         self.setup_tools()
         
-        # Register callback for new devices
-        self.device_store.register_on_announce_callback(self.register_dynamic_tools_for_device)
+        # Register callbacks for device lifecycle changes.
+        self.device_store.register_on_announce_callback(self.on_device_announced)
+        self.device_store.register_on_status_callback(self.on_device_status_updated)
+
+    def _get_mcp_tools_dict(self):
+        if hasattr(self.mcp, "_tools") and isinstance(self.mcp._tools, dict):
+            return self.mcp._tools
+        if hasattr(self.mcp, "_tool_manager"):
+            tm = self.mcp._tool_manager
+            if hasattr(tm, "_tools") and isinstance(tm._tools, dict):
+                return tm._tools
+        return None
+
+    def _unregister_device_dynamic_tools(self, device_id: str):
+        old_names = self._dynamic_tool_names_by_device.get(device_id, set())
+        if not old_names:
+            return
+
+        tools_dict = self._get_mcp_tools_dict()
+        if tools_dict is None:
+            return
+
+        removed = 0
+        for name in old_names:
+            if name in tools_dict:
+                tools_dict.pop(name, None)
+                removed += 1
+        if removed:
+            log(f"[MCP] Unregistered {removed} old dynamic tools for {device_id}")
+
+    def _resolve_registered_name(self, desired_name: str, device_id: str, fallback_key: str) -> str:
+        tools_dict = self._get_mcp_tools_dict() or {}
+        if desired_name not in tools_dict:
+            return desired_name
+
+        candidate = f"{desired_name}__{device_id}"
+        if candidate not in tools_dict:
+            log(f"[MCP] Tool name collision for '{desired_name}', using '{candidate}'")
+            return candidate
+
+        candidate = f"{desired_name}__{device_id}_{fallback_key}"
+        i = 2
+        while candidate in tools_dict:
+            candidate = f"{desired_name}__{device_id}_{fallback_key}_{i}"
+            i += 1
+        log(f"[MCP] Tool name collision for '{desired_name}', using '{candidate}'")
+        return candidate
+
+    def _unregister_tool_name(self, tool_name: str):
+        tools_dict = self._get_mcp_tools_dict()
+        if tools_dict is None:
+            return
+        if tool_name in tools_dict:
+            tools_dict.pop(tool_name, None)
+
+    def _execute_device_tool_raw(self, device_id: str, tool: str, args: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
+        if self.command_service:
+            return self.command_service.execute(device_id, tool, args)
+        return publish_cmd(
+            self.device_store,
+            self.cmd_waiter,
+            get_mqtt_pub_client(),
+            device_id,
+            tool,
+            args,
+            ipc_agent=self.ipc_agent,
+        )
+
+    def reload_all_tools(self):
+        self.reset_tools()
+        self.register_all_announced_devices()
+        self.register_virtual_tools()
+
+    def on_device_announced(self, device_id: str):
+        self.register_dynamic_tools_for_device(device_id)
+
+    def on_device_status_updated(self, device_id: str, prev_online: Any, new_online: bool, msg: dict):
+        if new_online and not prev_online:
+            self.register_dynamic_tools_for_device(device_id)
+        if (prev_online is True) and (not new_online):
+            with self._sync_lock:
+                self._unregister_device_dynamic_tools(device_id)
+                self._dynamic_tool_names_by_device.pop(device_id, None)
 
     def setup_resources(self):
         @self.mcp.resource("bridge://devices")
@@ -144,23 +241,36 @@ class BridgeServer:
             if d and not d.get("online", False):
                 return [TextContent(type="text", text=f"Error: Device {device_id} is offline")]
 
-            if self.command_service:
-                ok, resp = self.command_service.execute(device_id, tool, args)
-            else:
-                ok, resp = publish_cmd(
-                    self.device_store,
-                    self.cmd_waiter,
-                    get_mqtt_pub_client(),
-                    device_id,
-                    tool,
-                    args,
-                    ipc_agent=self.ipc_agent,
-                )
+            ok, resp = self._execute_device_tool_raw(device_id, tool, args)
             if not ok:
                 error_msg = resp.get("error", {}).get("message", "Unknown error")
                 return [TextContent(type="text", text=f"Error: {error_msg}")]
             
             return convert_response_to_content_list(resp)
+
+        @self.mcp.tool()
+        def hampter_ops(
+            flow: str,
+            payload: dict | None = None
+        ) -> List[TextContent]:
+            """
+            Step1: flow only -> template. Step2: flow+payload -> execute.
+            flows: run_device_tool, run_tool_batch, add_port_route, remove_port_route, edit_port_route, save_tool_batch, delete_tool_batch, set_device_projection, set_tool_projection, refresh_runtime
+            """
+            if not payload:
+                result = self.ops_hub.get_flow_guide(flow)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            result = self.ops_hub.execute_flow(flow, payload)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        @self.mcp.tool()
+        def hampter_debug(section: str = "summary", include_details: bool = False) -> List[TextContent]:
+            """
+            Runtime diagnostics. section: summary|validate|state
+            """
+            payload = self.ops_hub.debug(section=section, include_details=include_details)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
         @self.mcp.tool()
         def list_devices(show_offline: bool = False) -> List[TextContent]:
@@ -378,104 +488,96 @@ class BridgeServer:
     def register_dynamic_tools_for_device(self, device_id: str):
         """Register dynamic projected tools for a specific device with FastMCP using proper schemas"""
         device = self.device_store.get(device_id)
-        if not device or not device.get("tools"):
-            return
-        
-        # Skip offline devices - their tools should not be registered
-        if not device.get("online", False):
-            log(f"[MCP] Skipping tool registration for offline device: {device_id}")
-            return
-        
-        # log(f"[MCP] Registering dynamic projected tools for device {device_id}")
-        
-        for tool_info in device["tools"]:
-            tool_name = tool_info.get("name", "")
-            if not tool_name:
-                continue
+        with self._sync_lock:
+            self._unregister_device_dynamic_tools(device_id)
+            self._dynamic_tool_names_by_device[device_id] = set()
+
+            if not device or not device.get("tools"):
+                return
             
-            if not self.projection_store.is_tool_enabled(device_id, tool_name):
-                log(f"[MCP] Skipping disabled tool: {tool_name} for device {device_id}")
-                continue
+            # Skip offline devices - their tools should not be registered
+            if not device.get("online", False):
+                log(f"[MCP] Skipping tool registration for offline device: {device_id}")
+                return
+
+            self.tool_registry.register_device_tools(device_id, device["tools"], device.get("name"))
             
-            projected_tool = self.projection_store.get_tool_projection(device_id, tool_name, tool_info)
-            projected_name = projected_tool["name"]
-            
-            tool_key = f"{projected_name}_{device_id}"
-            
-            if self.tool_registry.get_registered_function(tool_key):
-                continue
-            
-            try:
-                schema = tool_info.get("parameters", {})
-                if not schema or schema.get("type") != "object":
-                    log(f"[MCP] Skipping tool {tool_key}: invalid or missing schema")
+            # log(f"[MCP] Registering dynamic projected tools for device {device_id}")
+            for tool_info in device["tools"]:
+                tool_name = tool_info.get("name", "")
+                if not tool_name:
                     continue
                 
-                ParamModel = json_schema_to_pydantic_model(f"{tool_key}_params", schema)
+                if not self.projection_store.is_tool_enabled(device_id, tool_name):
+                    log(f"[MCP] Skipping disabled tool: {tool_name} for device {device_id}")
+                    continue
                 
-                # Capture variables in closure
-                def create_tool_func(device_id_copy, original_tool_name_copy, projected_tool_copy, param_model):
-                    def tool_func(params: param_model) -> List[Union[ImageContent, TextContent]]:
-                        """Dynamically generated projected device tool function with proper schema"""
-                        args = params.dict()
-                        
-                        # Check online status before invoking
-                        d = self.device_store.get(device_id_copy)
-                        if d and not d.get("online", False):
-                             return [TextContent(type="text", text=f"Error: Device {device_id_copy} is offline")]
-
-                        # Sanitize args
-                        for k, v in args.items():
-                            if isinstance(v, str) and v.strip().startswith('{'):
-                                try:
-                                    loaded = json.loads(v)
-                                    if isinstance(loaded, dict) and k in loaded:
-                                        args[k] = loaded[k]
-                                        log(f"[MCP] Auto-unwrapped nested JSON for arg '{k}'")
-                                except:
-                                    pass
-
-
-                        log(f"[PROJECTED_TOOL] {projected_tool_copy['name']} ({original_tool_name_copy}) called with args: {json.dumps(args, indent=2)}")
-                        
-                        if self.command_service:
-                            ok, resp = self.command_service.execute(device_id_copy, original_tool_name_copy, args)
-                        else:
-                            ok, resp = publish_cmd(
-                                self.device_store,
-                                self.cmd_waiter,
-                                get_mqtt_pub_client(),
-                                device_id_copy,
-                                original_tool_name_copy,
-                                args,
-                                ipc_agent=self.ipc_agent,
-                            )
-                        
-                        if not ok:
-                            error_msg = resp.get("error", {}).get("message", "Unknown error")
-                            return [TextContent(type="text", text=f"Error: {error_msg}")]
-                        
-                        return convert_response_to_content_list(resp)
+                projected_tool = self.projection_store.get_tool_projection(device_id, tool_name, tool_info)
+                projected_name = projected_tool["name"]
+                registered_name = self._resolve_registered_name(projected_name, device_id, tool_name)
+                
+                tool_key = f"{registered_name}_{device_id}"
+                
+                try:
+                    schema = tool_info.get("parameters", {})
+                    if not schema or schema.get("type") != "object":
+                        log(f"[MCP] Skipping tool {tool_key}: invalid or missing schema")
+                        continue
                     
-                    tool_func.__name__ = projected_tool_copy["name"]
-                    tool_func.__doc__ = projected_tool_copy["description"]
+                    ParamModel = json_schema_to_pydantic_model(f"{tool_key}_params", schema)
                     
-                    return tool_func
-                
-                dynamic_func = create_tool_func(device_id, tool_name, projected_tool, ParamModel)
-                decorated_func = self.mcp.tool()(dynamic_func)
-                self.tool_registry.set_registered_function(tool_key, decorated_func)
-                
-                # log(f"[MCP] Successfully registered projected tool: {tool_key}")
-                
-            except Exception as e:
-                log(f"[MCP] Failed to register projected tool {tool_key}: {e}")
+                    # Capture variables in closure
+                    def create_tool_func(device_id_copy, original_tool_name_copy, projected_tool_copy, param_model, registered_name_copy):
+                        def tool_func(params: param_model) -> List[Union[ImageContent, TextContent]]:
+                            """Dynamically generated projected device tool function with proper schema"""
+                            args = params.dict()
+                            
+                            # Check online status before invoking
+                            d = self.device_store.get(device_id_copy)
+                            if d and not d.get("online", False):
+                                 return [TextContent(type="text", text=f"Error: Device {device_id_copy} is offline")]
+
+                            # Sanitize args
+                            for k, v in args.items():
+                                if isinstance(v, str) and v.strip().startswith('{'):
+                                    try:
+                                        loaded = json.loads(v)
+                                        if isinstance(loaded, dict) and k in loaded:
+                                            args[k] = loaded[k]
+                                            log(f"[MCP] Auto-unwrapped nested JSON for arg '{k}'")
+                                    except:
+                                        pass
+
+                            log(f"[PROJECTED_TOOL] {projected_tool_copy['name']} ({original_tool_name_copy}) called with args: {json.dumps(args, indent=2)}")
+                            
+                            ok, resp = self._execute_device_tool_raw(device_id_copy, original_tool_name_copy, args)
+                            
+                            if not ok:
+                                error_msg = resp.get("error", {}).get("message", "Unknown error")
+                                return [TextContent(type="text", text=f"Error: {error_msg}")]
+                            
+                            return convert_response_to_content_list(resp)
+                        
+                        tool_func.__name__ = registered_name_copy
+                        tool_func.__doc__ = projected_tool_copy["description"]
+                        
+                        return tool_func
+                    
+                    dynamic_func = create_tool_func(device_id, tool_name, projected_tool, ParamModel, registered_name)
+                    decorated_func = self.mcp.tool()(dynamic_func)
+                    self.tool_registry.set_registered_function(tool_key, decorated_func)
+                    self._dynamic_tool_names_by_device.setdefault(device_id, set()).add(registered_name)
+                    
+                    # log(f"[MCP] Successfully registered projected tool: {tool_key}")
+                except Exception as e:
+                    log(f"[MCP] Failed to register projected tool {tool_key}: {e}")
 
     def reset_tools(self):
         """Clear all registered tools from both internal registry and FastMCP"""
         # 1. Clear our internal registries
         self.tool_registry.clear_tools()
         self._registered_virtual_tools.clear()  # Clear virtual tools tracking
+        self._dynamic_tool_names_by_device.clear()
         
         # 2. Clear FastMCP internal registry
         # FastMCP implementation details: it likely stores tools in _tool_manager or has a list.
@@ -517,11 +619,18 @@ class BridgeServer:
         
         virtual_tools = self.virtual_tool_store.get_all_virtual_tools()
         log(f"[MCP] Registering {len(virtual_tools)} virtual tools")
+
+        current_names = set(virtual_tools.keys())
+        stale_names = set(self._registered_virtual_tools) - current_names
+        for stale_name in stale_names:
+            self._unregister_tool_name(stale_name)
+            self._registered_virtual_tools.discard(stale_name)
         
         for vt_name, vt_def in virtual_tools.items():
-            # Skip if already registered
+            # Always refresh to ensure updates are reflected immediately.
             if vt_name in self._registered_virtual_tools:
-                continue
+                self._unregister_tool_name(vt_name)
+                self._registered_virtual_tools.discard(vt_name)
             
             try:
                 self._register_single_virtual_tool(vt_name, vt_def)
