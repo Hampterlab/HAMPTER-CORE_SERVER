@@ -3,14 +3,86 @@ let portsData = { outports: [], inports: [] };
 let routingData = { matrix: {}, connection_count: 0 };
 let connections = [];
 let currentDevices = [];
+let virtualToolsData = {};
+let vtBindingCounter = 0;
+let activeTab = 'connections';
+let projectionDirty = false;
+let realtimeSource = null;
+let realtimeReconnectTimer = null;
+let lastRevisions = null;
 
-// ===== Tab Switching =====
+const inFlight = {
+    tools: false,
+    matrix: false,
+    connections: false,
+    virtual: false,
+};
+
+function escapeHtml(value) {
+    const str = String(value ?? '');
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function encArg(value) {
+    return encodeURIComponent(String(value ?? ''));
+}
+
+async function fetchJson(url, options = undefined) {
+    const res = await fetch(url, options);
+    let data = {};
+    try {
+        data = await res.json();
+    } catch (_e) {
+        data = {};
+    }
+    if (!res.ok) {
+        throw new Error(data.error || data.message || `${res.status} ${res.statusText}`);
+    }
+    return data;
+}
+
+function setDirty(enabled) {
+    projectionDirty = enabled;
+    const el = document.getElementById('dirty-indicator');
+    el.style.display = enabled ? 'inline-flex' : 'none';
+}
+
+function addActivity(message, level = 'info') {
+    const list = document.getElementById('activity-log');
+    const li = document.createElement('li');
+    li.className = `activity-${level}`;
+    const time = new Date().toLocaleTimeString();
+    li.textContent = `${time} - ${message}`;
+    list.prepend(li);
+
+    while (list.children.length > 8) {
+        list.removeChild(list.lastChild);
+    }
+}
+
+function showAlert(msg, type = 'success') {
+    const el = document.getElementById('alert');
+    el.textContent = msg;
+    el.className = `alert alert-${type}`;
+    el.style.display = 'block';
+    addActivity(msg, type === 'error' ? 'error' : 'info');
+    setTimeout(() => {
+        el.style.display = 'none';
+    }, 4000);
+}
+
 function switchTab(tabName) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
     document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
     document.getElementById(`tab-${tabName}`).classList.add('active');
+    activeTab = tabName;
 
     if (tabName === 'tools') loadToolsData();
     else if (tabName === 'matrix') loadMatrixData();
@@ -18,94 +90,167 @@ function switchTab(tabName) {
     else if (tabName === 'virtual') loadVirtualToolsData();
 }
 
-// ===== Status Check =====
-async function checkStatus() {
-    try {
-        const bridgeRes = await fetch('/api/bridge/health');
-        const bridgeData = await bridgeRes.json();
-        const bridgeEl = document.getElementById('bridge-status');
-        bridgeEl.textContent = `Bridge: ${bridgeData.healthy ? 'Online' : 'Offline'}`;
-        bridgeEl.className = `status-badge ${bridgeData.healthy ? 'status-online' : 'status-offline'}`;
-
-        const dockerRes = await fetch('/api/docker/status');
-        const dockerData = await dockerRes.json();
-        const dockerEl = document.getElementById('docker-status');
-        dockerEl.textContent = `Docker: ${dockerData.running ? 'Running' : 'Stopped'}`;
-        dockerEl.className = `status-badge ${dockerData.running ? 'status-online' : 'status-offline'}`;
-    } catch (e) {
-        console.error('Status check failed:', e);
-    }
+function setBridgeStatus(online) {
+    const el = document.getElementById('bridge-status');
+    el.className = `status-chip ${online ? 'online' : 'offline'}`;
+    el.innerHTML = `<span class="led"></span>Bridge ${online ? 'online' : 'offline'}`;
 }
 
-// ===== Tools Tab =====
-async function loadToolsData() {
-    showLoading(true);
+function setDockerStatus(running) {
+    const el = document.getElementById('docker-status');
+    el.className = `status-chip ${running ? 'online' : 'offline'}`;
+    el.innerHTML = `<span class="led"></span>Docker ${running ? 'running' : 'stopped'}`;
+}
+
+function setStreamStatus(connected) {
+    const el = document.getElementById('stream-status');
+    el.className = `stream-chip ${connected ? 'online' : 'offline'}`;
+    el.textContent = `Realtime: ${connected ? 'connected' : 'disconnected'}`;
+}
+
+function updateLiveStats(counts) {
+    document.getElementById('live-devices').textContent = counts.devices_total ?? 0;
+    document.getElementById('live-online').textContent = counts.devices_online ?? 0;
+    document.getElementById('live-connections').textContent = counts.connections ?? 0;
+    document.getElementById('live-vtools').textContent = counts.virtual_tools ?? 0;
+}
+
+function refreshByRevisions(revisions) {
+    if (!lastRevisions) {
+        lastRevisions = revisions;
+        return;
+    }
+
+    if (revisions.devices !== lastRevisions.devices) {
+        if (activeTab === 'tools' || activeTab === 'virtual') {
+            if (activeTab === 'tools') loadToolsData({ silent: true });
+            if (activeTab === 'virtual') loadVirtualToolsData({ silent: true });
+        }
+    }
+
+    if (revisions.connections !== lastRevisions.connections) {
+        if (activeTab === 'connections') loadConnectionsData({ silent: true });
+    }
+
+    if (revisions.routing !== lastRevisions.routing) {
+        if (activeTab === 'matrix') loadMatrixData({ silent: true });
+    }
+
+    if (revisions.virtual_tools !== lastRevisions.virtual_tools) {
+        if (activeTab === 'virtual') loadVirtualToolsData({ silent: true });
+    }
+
+    if (revisions.status !== lastRevisions.status && activeTab === 'tools') {
+        loadToolsData({ silent: true });
+    }
+
+    lastRevisions = revisions;
+}
+
+function connectRealtime() {
+    if (realtimeSource) realtimeSource.close();
+
+    realtimeSource = new EventSource('/api/stream');
+
+    realtimeSource.addEventListener('snapshot', (ev) => {
+        try {
+            const snap = JSON.parse(ev.data);
+            setBridgeStatus(!!snap.bridge_healthy);
+            setDockerStatus(!!snap.docker_running);
+            updateLiveStats(snap.counts || {});
+            setStreamStatus(true);
+            refreshByRevisions(snap.revisions || {});
+        } catch (e) {
+            console.error('snapshot parse error', e);
+        }
+    });
+
+    realtimeSource.addEventListener('ping', () => {
+        setStreamStatus(true);
+    });
+
+    realtimeSource.onerror = () => {
+        setStreamStatus(false);
+        if (realtimeSource) {
+            realtimeSource.close();
+            realtimeSource = null;
+        }
+        if (!realtimeReconnectTimer) {
+            realtimeReconnectTimer = setTimeout(() => {
+                realtimeReconnectTimer = null;
+                connectRealtime();
+            }, 2000);
+        }
+    };
+}
+
+async function loadToolsData(options = {}) {
+    if (inFlight.tools) return;
+    inFlight.tools = true;
     try {
-        const configRes = await fetch('/api/projection/config');
-        projectionConfig = await configRes.json();
-
-        const devicesRes = await fetch('/api/devices');
-        currentDevices = await devicesRes.json();
-
+        projectionConfig = await fetchJson('/api/projection/config');
+        currentDevices = await fetchJson('/api/devices');
         renderDevices();
         renderGlobalSettings();
+        if (!options.silent) addActivity('Tool projection data refreshed');
     } catch (e) {
         showAlert('Failed to load tools data: ' + e.message, 'error');
     } finally {
-        showLoading(false);
+        inFlight.tools = false;
     }
 }
 
 function renderDevices() {
     const container = document.getElementById('devices-container');
-    const devices = currentDevices;
     const showOffline = document.getElementById('show-offline-devices')?.checked;
+    const query = (document.getElementById('device-search')?.value || '').toLowerCase().trim();
 
-    if (!devices || devices.length === 0) {
+    if (!currentDevices || currentDevices.length === 0) {
         container.innerHTML = '<p>No registered devices.</p>';
         return;
     }
 
-    const filteredDevices = devices.filter(d => d.online || showOffline);
+    let filtered = currentDevices.filter(d => d.online || showOffline);
+    if (query) {
+        filtered = filtered.filter(d => {
+            const tools = (d.tools || []).map(t => `${t.name} ${t.description || ''}`).join(' ').toLowerCase();
+            const label = `${d.name || ''} ${d.device_id || ''}`.toLowerCase();
+            return label.includes(query) || tools.includes(query);
+        });
+    }
 
-    if (filteredDevices.length === 0) {
-        container.innerHTML = '<p>No devices to display (offline devices are hidden).</p>';
+    if (filtered.length === 0) {
+        container.innerHTML = '<p>No matching devices.</p>';
         return;
     }
 
-    container.innerHTML = filteredDevices.map(device => {
+    container.innerHTML = filtered.map(device => {
         const deviceId = device.device_id;
+        const deviceIdEnc = encArg(deviceId);
         const projection = projectionConfig.devices?.[deviceId] || {};
         const tools = device.tools || [];
         const isOffline = !device.online;
-
-        const cardStyle = isOffline ? 'opacity: 0.6; background-color: #f0f0f0;' : '';
-        const inputDisabled = isOffline ? 'disabled' : '';
+        const disabled = isOffline ? 'disabled' : '';
 
         return `
-            <div class="device-card" style="${cardStyle}">
-                <div class="device-header" style="${isOffline ? 'background-color: #e0e0e0;' : ''}">
+            <div class="device-card ${isOffline ? 'device-offline' : ''}">
+                <div class="device-header">
                     <div class="device-info">
-                        <h3>${device.name || deviceId} ${isOffline ? '(OFFLINE)' : ''}</h3>
-                        <div class="device-id">${deviceId}</div>
+                        <h3>${escapeHtml(device.name || deviceId)}</h3>
+                        <div class="device-id">${escapeHtml(deviceId)}</div>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <span class="status-badge ${device.online ? 'status-online' : 'status-offline'}">
-                            ${device.online ? 'Online' : 'Offline'}
-                        </span>
-                        <label><input type="checkbox" ${projection.enabled !== false ? 'checked' : ''} 
-                            onchange="updateDeviceEnabled('${deviceId}', this.checked)" ${inputDisabled}> Enabled</label>
+                    <div class="device-controls">
+                        <span class="status-chip ${device.online ? 'online' : 'offline'}"><span class="led"></span>${device.online ? 'Online' : 'Offline'}</span>
+                        <label class="checkbox-inline"><input type="checkbox" ${projection.enabled !== false ? 'checked' : ''}
+                            onchange="updateDeviceEnabled(decodeURIComponent('${deviceIdEnc}'), this.checked)" ${disabled}> Enabled</label>
                     </div>
                 </div>
                 <div class="device-tools">
-                    <div style="margin-bottom: 15px;">
-                        <label>Device Alias: </label>
-                        <input type="text" value="${projection.device_alias || ''}" 
-                            onchange="updateDeviceAlias('${deviceId}', this.value)"
-                            placeholder="Display name" style="width: 200px;" ${inputDisabled}>
+                    <div class="tool-row">
+                        <label>Device Alias</label>
+                        <input type="text" value="${escapeHtml(projection.device_alias || '')}" onchange="updateDeviceAlias(decodeURIComponent('${deviceIdEnc}'), this.value)" placeholder="Display name" ${disabled}>
                     </div>
-                    <strong>Tools (${tools.length}):</strong>
-                    <div style="margin-top: 10px;">
+                    <div class="tool-list">
                         ${tools.map(tool => renderTool(deviceId, tool, projection.tools?.[tool.name] || {}, isOffline)).join('')}
                     </div>
                 </div>
@@ -115,20 +260,20 @@ function renderDevices() {
 }
 
 function renderTool(deviceId, tool, toolProjection, isOffline) {
-    const inputDisabled = isOffline ? 'disabled' : '';
+    const disabled = isOffline ? 'disabled' : '';
+    const deviceIdEnc = encArg(deviceId);
+    const toolNameEnc = encArg(tool.name);
     return `
         <div class="tool-item">
-            <strong>${tool.name}</strong>
-            <div style="font-size: 0.85em; color: #666;">${tool.description || 'No description'}</div>
+            <div class="tool-head">
+                <strong>${escapeHtml(tool.name)}</strong>
+                <span>${escapeHtml(tool.description || 'No description')}</span>
+            </div>
             <div class="tool-controls">
-                <label><input type="checkbox" ${toolProjection.enabled !== false ? 'checked' : ''} 
-                    onchange="updateToolEnabled('${deviceId}', '${tool.name}', this.checked)" ${inputDisabled}> Enable</label>
-                <input type="text" value="${toolProjection.alias || ''}" 
-                    onchange="updateToolAlias('${deviceId}', '${tool.name}', this.value)"
-                    placeholder="Alias" ${inputDisabled}>
-                <input type="text" value="${toolProjection.description || ''}" 
-                    onchange="updateToolDescription('${deviceId}', '${tool.name}', this.value)"
-                    placeholder="Custom description" ${inputDisabled}>
+                <label class="checkbox-inline"><input type="checkbox" ${toolProjection.enabled !== false ? 'checked' : ''}
+                    onchange="updateToolEnabled(decodeURIComponent('${deviceIdEnc}'), decodeURIComponent('${toolNameEnc}'), this.checked)" ${disabled}> Enabled</label>
+                <input type="text" value="${escapeHtml(toolProjection.alias || '')}" onchange="updateToolAlias(decodeURIComponent('${deviceIdEnc}'), decodeURIComponent('${toolNameEnc}'), this.value)" placeholder="Alias" ${disabled}>
+                <input type="text" value="${escapeHtml(toolProjection.description || '')}" onchange="updateToolDescription(decodeURIComponent('${deviceIdEnc}'), decodeURIComponent('${toolNameEnc}'), this.value)" placeholder="Custom description" ${disabled}>
             </div>
         </div>
     `;
@@ -154,85 +299,67 @@ function ensureToolConfig(deviceId, toolName) {
     }
 }
 
-function updateDeviceEnabled(deviceId, enabled) { ensureDeviceConfig(deviceId); projectionConfig.devices[deviceId].enabled = enabled; }
-function updateDeviceAlias(deviceId, alias) { ensureDeviceConfig(deviceId); projectionConfig.devices[deviceId].device_alias = alias || null; }
-function updateToolEnabled(deviceId, toolName, enabled) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].enabled = enabled; }
-function updateToolAlias(deviceId, toolName, alias) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].alias = alias || null; }
-function updateToolDescription(deviceId, toolName, desc) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].description = desc || null; }
+function updateDeviceEnabled(deviceId, enabled) { ensureDeviceConfig(deviceId); projectionConfig.devices[deviceId].enabled = enabled; setDirty(true); }
+function updateDeviceAlias(deviceId, alias) { ensureDeviceConfig(deviceId); projectionConfig.devices[deviceId].device_alias = alias || null; setDirty(true); }
+function updateToolEnabled(deviceId, toolName, enabled) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].enabled = enabled; setDirty(true); }
+function updateToolAlias(deviceId, toolName, alias) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].alias = alias || null; setDirty(true); }
+function updateToolDescription(deviceId, toolName, desc) { ensureToolConfig(deviceId, toolName); projectionConfig.devices[deviceId].tools[toolName].description = desc || null; setDirty(true); }
 
 async function saveProjectionConfig() {
-    projectionConfig.global = {
-        auto_enable_new_devices: document.getElementById('auto-enable-devices').checked,
-        auto_enable_new_tools: document.getElementById('auto-enable-tools').checked
-    };
-
     try {
-        showLoading(true);
-        const res = await fetch('/api/projection/config', {
+        projectionConfig.global = {
+            auto_enable_new_devices: document.getElementById('auto-enable-devices').checked,
+            auto_enable_new_tools: document.getElementById('auto-enable-tools').checked
+        };
+        await fetchJson('/api/projection/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(projectionConfig)
         });
-        const result = await res.json();
-        if (res.ok) showAlert('Configuration saved!', 'success');
-        else showAlert('Save failed: ' + result.message, 'error');
+        setDirty(false);
+        showAlert('Projection configuration saved', 'success');
     } catch (e) {
         showAlert('Save failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
 async function reloadBridgeConfig() {
     try {
-        showLoading(true);
-        const res = await fetch('/api/bridge/reload', { method: 'POST' });
-        const result = await res.json();
+        const result = await fetchJson('/api/bridge/reload', { method: 'POST' });
         if (result.ok) {
-            showAlert('Configuration reloaded successfully!', 'success');
-            // Refresh tools data after reload
-            await loadToolsData();
+            showAlert('Bridge configuration reloaded', 'success');
+            await loadToolsData({ silent: true });
         } else {
-            showAlert('Reload failed: ' + result.error, 'error');
+            showAlert('Reload failed: ' + (result.error || 'unknown error'), 'error');
         }
     } catch (e) {
         showAlert('Reload failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
 async function restartBridge() {
-    if (!confirm('Are you sure you want to restart the Bridge container?')) return;
-
+    if (!confirm('Restart bridge container now? Active requests may fail briefly.')) return;
     try {
-        showLoading(true);
-        const res = await fetch('/api/docker/restart', { method: 'POST' });
-        const result = await res.json();
-        if (result.ok) showAlert('Bridge container restarted!', 'success');
-        else showAlert('Restart failed: ' + result.error, 'error');
+        const result = await fetchJson('/api/docker/restart', { method: 'POST' });
+        if (result.ok) showAlert('Bridge container restarted', 'success');
+        else showAlert('Restart failed: ' + (result.error || 'unknown error'), 'error');
     } catch (e) {
         showAlert('Restart failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
-// ===== Matrix Tab =====
-async function loadMatrixData() {
-    showLoading(true);
+async function loadMatrixData(options = {}) {
+    if (inFlight.matrix) return;
+    inFlight.matrix = true;
     try {
-        const portsRes = await fetch('/api/ports');
-        portsData = await portsRes.json();
-
-        const routingRes = await fetch('/api/routing');
-        routingData = await routingRes.json();
-
+        portsData = await fetchJson('/api/ports');
+        routingData = await fetchJson('/api/routing');
         renderMatrix();
+        if (!options.silent) addActivity('Routing matrix refreshed');
     } catch (e) {
         showAlert('Failed to load matrix data: ' + e.message, 'error');
     } finally {
-        showLoading(false);
+        inFlight.matrix = false;
     }
 }
 
@@ -246,18 +373,18 @@ function renderMatrix() {
     document.getElementById('stat-connections').textContent = routingData.connection_count || 0;
 
     if (outports.length === 0 || inports.length === 0) {
-        document.getElementById('routing-matrix').innerHTML = '<tr><td colspan="99">No ports available. Make sure devices have announced their ports.</td></tr>';
+        document.getElementById('routing-matrix').innerHTML = '<tr><td colspan="99">No ports available yet.</td></tr>';
         return;
     }
 
-    let html = '<thead><tr><th>OutPort \\\\ InPort</th>';
+    let html = '<thead><tr><th>OutPort / InPort</th>';
     inports.forEach(inp => {
-        html += `<th><span class="port-badge port-in">${inp.port_id}</span></th>`;
+        html += `<th><span class="port-badge in">${escapeHtml(inp.port_id)}</span></th>`;
     });
     html += '</tr></thead><tbody>';
 
     outports.forEach(outp => {
-        html += `<tr><td><span class="port-badge port-out">${outp.port_id}</span></td>`;
+        html += `<tr><td><span class="port-badge out">${escapeHtml(outp.port_id)}</span></td>`;
         inports.forEach(inp => {
             const cell = matrix[outp.port_id]?.[inp.port_id] || { connected: false };
             const connected = cell.connected;
@@ -267,118 +394,124 @@ function renderMatrix() {
             if (connected && enabled) cellClass += ' connected';
             else if (connected && !enabled) cellClass += ' disabled';
 
-            html += `<td class="${cellClass}" onclick="toggleConnection('${outp.port_id}', '${inp.port_id}', ${connected})">
+            html += `<td class="${cellClass}" onclick="toggleConnection(decodeURIComponent('${encArg(outp.port_id)}'), decodeURIComponent('${encArg(inp.port_id)}'), ${connected})">
                 <div class="connection-dot ${connected ? 'dot-connected' : 'dot-empty'}"></div>
             </td>`;
         });
         html += '</tr>';
     });
-    html += '</tbody>';
 
+    html += '</tbody>';
     document.getElementById('routing-matrix').innerHTML = html;
 }
 
 async function toggleConnection(source, target, isConnected) {
-    showLoading(true);
     try {
         if (isConnected) {
-            await fetch('/api/routing/disconnect', {
+            await fetchJson('/api/routing/disconnect', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source, target })
             });
-            showAlert(`Disconnected: ${source} → ${target}`, 'success');
+            showAlert(`Disconnected ${source} -> ${target}`, 'success');
         } else {
-            await fetch('/api/routing/connect', {
+            await fetchJson('/api/routing/connect', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source, target, transform: {}, description: '' })
             });
-            showAlert(`Connected: ${source} → ${target}`, 'success');
+            showAlert(`Connected ${source} -> ${target}`, 'success');
         }
-        await loadMatrixData();
+        await loadMatrixData({ silent: true });
+        await loadConnectionsData({ silent: true });
     } catch (e) {
         showAlert('Operation failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
-// ===== Connections Tab =====
-async function loadConnectionsData() {
-    showLoading(true);
+async function loadConnectionsData(options = {}) {
+    if (inFlight.connections) return;
+    inFlight.connections = true;
     try {
-        const portsRes = await fetch('/api/ports');
-        portsData = await portsRes.json();
-
-        const connRes = await fetch('/api/routing/connections');
-        connections = await connRes.json();
-
+        portsData = await fetchJson('/api/ports');
+        connections = await fetchJson('/api/routing/connections');
         renderConnections();
+        if (!options.silent) addActivity('Connections refreshed');
     } catch (e) {
         showAlert('Failed to load connections: ' + e.message, 'error');
     } finally {
-        showLoading(false);
+        inFlight.connections = false;
     }
 }
 
 function renderConnections() {
     const container = document.getElementById('connections-list');
+    const query = (document.getElementById('connections-search')?.value || '').toLowerCase().trim();
 
     if (!connections || connections.length === 0) {
-        container.innerHTML = '<p>No connections configured. Click "Add Connection" to create one.</p>';
+        container.innerHTML = '<p>No connections configured.</p>';
         return;
     }
 
-    container.innerHTML = connections.map(conn => {
-        const transformStr = Object.keys(conn.transform || {}).length > 0
-            ? JSON.stringify(conn.transform)
-            : 'none';
-        const statusIcon = conn.enabled ? '[ON]' : '[OFF]';
+    let list = connections;
+    if (query) {
+        list = connections.filter(conn => {
+            const haystack = `${conn.source || ''} ${conn.target || ''} ${conn.description || ''}`.toLowerCase();
+            return haystack.includes(query);
+        });
+    }
 
+    if (list.length === 0) {
+        container.innerHTML = '<p>No matching connections.</p>';
+        return;
+    }
+
+    container.innerHTML = list.map(conn => {
+        const transformStr = Object.keys(conn.transform || {}).length > 0 ? JSON.stringify(conn.transform) : 'none';
+        const connIdEnc = encArg(conn.id);
+        const sourceEnc = encArg(conn.source);
+        const targetEnc = encArg(conn.target);
         return `
             <div class="connection-item">
-                <div class="connection-info">
-                    <div class="connection-path">
-                        ${statusIcon} <span class="port-badge port-out">${conn.source}</span> 
-                        → <span class="port-badge port-in">${conn.target}</span>
-                    </div>
-                    <div class="connection-transform">Transform: ${transformStr}</div>
-                    ${conn.description ? `<div style="font-size: 0.85em; color: #888;">${conn.description}</div>` : ''}
+                <div class="connection-main">
+                    <span class="state-pill ${conn.enabled ? 'on' : 'off'}">${conn.enabled ? 'ON' : 'OFF'}</span>
+                    <span class="port-badge out">${escapeHtml(conn.source)}</span>
+                    <span class="arrow">-&gt;</span>
+                    <span class="port-badge in">${escapeHtml(conn.target)}</span>
+                </div>
+                <div class="connection-meta">
+                    <span>Transform: ${escapeHtml(transformStr)}</span>
+                    <span>${escapeHtml(conn.description || '')}</span>
                 </div>
                 <div class="connection-actions">
-                    <button class="btn btn-primary btn-sm" onclick="editConnection('${conn.id}')">[EDIT]</button>
-                    <button class="btn btn-danger btn-sm" onclick="quickDelete('${conn.id}')">[DEL]</button>
+                    <button class="btn" onclick="editConnection(decodeURIComponent('${connIdEnc}'))">Edit</button>
+                    <button class="btn btn-danger" onclick="quickDelete(decodeURIComponent('${connIdEnc}'), decodeURIComponent('${sourceEnc}'), decodeURIComponent('${targetEnc}'))">Delete</button>
                 </div>
             </div>
         `;
     }).join('');
 }
 
-async function quickDelete(connectionId) {
-    if (!confirm('Delete this connection?')) return;
+async function quickDelete(connectionId, source, target) {
+    if (!confirm(`Delete connection ${source} -> ${target}?`)) return;
     try {
-        showLoading(true);
-        await fetch('/api/routing/disconnect', {
+        await fetchJson('/api/routing/disconnect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ connection_id: connectionId })
         });
         showAlert('Connection deleted', 'success');
-        loadConnectionsData();
+        loadConnectionsData({ silent: true });
     } catch (e) {
         showAlert('Delete failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
-// ===== Modal =====
 function showAddConnectionModal() {
     document.getElementById('modal-title').textContent = 'Add Connection';
     document.getElementById('modal-connection-id').value = '';
-    document.getElementById('modal-source').innerHTML = portsData.outports.map(p => `<option value="${p.port_id}">${p.port_id}</option>`).join('');
-    document.getElementById('modal-target').innerHTML = portsData.inports.map(p => `<option value="${p.port_id}">${p.port_id}</option>`).join('');
+    document.getElementById('modal-source').innerHTML = (portsData.outports || []).map(p => `<option value="${escapeHtml(p.port_id)}">${escapeHtml(p.port_id)}</option>`).join('');
+    document.getElementById('modal-target').innerHTML = (portsData.inports || []).map(p => `<option value="${escapeHtml(p.port_id)}">${escapeHtml(p.port_id)}</option>`).join('');
     document.getElementById('modal-scale').value = '';
     document.getElementById('modal-offset').value = '';
     document.getElementById('modal-threshold').value = '';
@@ -394,14 +527,14 @@ function editConnection(connectionId) {
 
     document.getElementById('modal-title').textContent = 'Edit Connection';
     document.getElementById('modal-connection-id').value = connectionId;
-    document.getElementById('modal-source').innerHTML = portsData.outports.map(p => `<option value="${p.port_id}" ${p.port_id === conn.source ? 'selected' : ''}>${p.port_id}</option>`).join('');
-    document.getElementById('modal-target').innerHTML = portsData.inports.map(p => `<option value="${p.port_id}" ${p.port_id === conn.target ? 'selected' : ''}>${p.port_id}</option>`).join('');
-    document.getElementById('modal-scale').value = conn.transform?.scale || '';
-    document.getElementById('modal-offset').value = conn.transform?.offset || '';
-    document.getElementById('modal-threshold').value = conn.transform?.threshold || '';
+    document.getElementById('modal-source').innerHTML = (portsData.outports || []).map(p => `<option value="${escapeHtml(p.port_id)}" ${p.port_id === conn.source ? 'selected' : ''}>${escapeHtml(p.port_id)}</option>`).join('');
+    document.getElementById('modal-target').innerHTML = (portsData.inports || []).map(p => `<option value="${escapeHtml(p.port_id)}" ${p.port_id === conn.target ? 'selected' : ''}>${escapeHtml(p.port_id)}</option>`).join('');
+    document.getElementById('modal-scale').value = conn.transform?.scale ?? '';
+    document.getElementById('modal-offset').value = conn.transform?.offset ?? '';
+    document.getElementById('modal-threshold').value = conn.transform?.threshold ?? '';
     document.getElementById('modal-enabled').value = conn.enabled !== false ? 'true' : 'false';
     document.getElementById('modal-description').value = conn.description || '';
-    document.getElementById('modal-delete-btn').style.display = 'inline-block';
+    document.getElementById('modal-delete-btn').style.display = 'inline-flex';
     document.getElementById('connection-modal').classList.add('show');
 }
 
@@ -428,18 +561,15 @@ async function saveConnection() {
     }
 
     try {
-        showLoading(true);
         if (id) {
-            // Update
-            await fetch(`/api/routing/connection/${id}`, {
+            await fetchJson(`/api/routing/connection/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source, target, transform, enabled, description })
             });
             showAlert('Connection updated', 'success');
         } else {
-            // Create
-            await fetch('/api/routing/connect', {
+            await fetchJson('/api/routing/connect', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source, target, transform, enabled, description })
@@ -447,11 +577,10 @@ async function saveConnection() {
             showAlert('Connection created', 'success');
         }
         closeModal();
-        loadConnectionsData();
+        loadConnectionsData({ silent: true });
+        loadMatrixData({ silent: true });
     } catch (e) {
         showAlert('Save failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
@@ -460,86 +589,63 @@ async function deleteConnection() {
     if (!id || !confirm('Delete this connection?')) return;
 
     try {
-        showLoading(true);
-        await fetch('/api/routing/disconnect', {
+        await fetchJson('/api/routing/disconnect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ connection_id: id })
         });
         showAlert('Connection deleted', 'success');
         closeModal();
-        loadConnectionsData();
+        loadConnectionsData({ silent: true });
     } catch (e) {
         showAlert('Delete failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
-// ===== UI Helpers =====
-function showLoading(show) {
-    document.getElementById('loading').style.display = show ? 'block' : 'none';
-}
-
-function showAlert(msg, type) {
-    const el = document.getElementById('alert');
-    el.textContent = msg;
-    el.className = `alert alert-${type}`;
-    el.style.display = 'block';
-    setTimeout(() => el.style.display = 'none', 3000);
-}
-
-// ===== Virtual Tools Tab =====
-let virtualToolsData = {};
-let vtBindingCounter = 0;
-
-async function loadVirtualToolsData() {
-    showLoading(true);
+async function loadVirtualToolsData(options = {}) {
+    if (inFlight.virtual) return;
+    inFlight.virtual = true;
     try {
-        // Load virtual tools
-        const vtRes = await fetch('/api/virtual-tools');
-        virtualToolsData = await vtRes.json();
-
-        // Also load devices for binding selection
-        const devicesRes = await fetch('/api/devices');
-        currentDevices = await devicesRes.json();
-
+        virtualToolsData = await fetchJson('/api/virtual-tools');
+        currentDevices = await fetchJson('/api/devices');
         renderVirtualTools();
+        if (!options.silent) addActivity('Virtual tools refreshed');
     } catch (e) {
         showAlert('Failed to load virtual tools: ' + e.message, 'error');
     } finally {
-        showLoading(false);
+        inFlight.virtual = false;
     }
 }
 
 function renderVirtualTools() {
     const container = document.getElementById('virtual-tools-list');
-    const tools = Object.entries(virtualToolsData);
+    const tools = Object.entries(virtualToolsData || {});
 
-    if (!tools || tools.length === 0) {
-        container.innerHTML = '<p>No virtual tools configured. Click \"Add Virtual Tool\" to create one.</p>';
+    if (tools.length === 0) {
+        container.innerHTML = '<p>No virtual tools configured.</p>';
         return;
     }
 
     container.innerHTML = tools.map(([name, def]) => {
         const bindings = def.bindings || [];
         const bindingsSummary = bindings.map(b => `${b.device_id}/${b.tool}`).join(', ') || 'No bindings';
+        const nameEnc = encArg(name);
 
         return `
             <div class="device-card">
                 <div class="device-header">
                     <div class="device-info">
-                        <h3>${name}</h3>
-                        <div class="device-id">${def.description || 'No description'}</div>
+                        <h3>${escapeHtml(name)}</h3>
+                        <div class="device-id">${escapeHtml(def.description || 'No description')}</div>
                     </div>
                     <div class="connection-actions">
-                        <button class="btn btn-primary btn-sm" onclick="editVirtualTool('${name}')">[EDIT]</button>
-                        <button class="btn btn-danger btn-sm" onclick="quickDeleteVirtualTool('${name}')">[DEL]</button>
+                        <button class="btn" onclick="editVirtualTool(decodeURIComponent('${nameEnc}'))">Edit</button>
+                        <button class="btn btn-danger" onclick="quickDeleteVirtualTool(decodeURIComponent('${nameEnc}'))">Delete</button>
                     </div>
                 </div>
                 <div class="device-tools">
-                    <strong>Bindings (${bindings.length}):</strong>
-                    <div style="margin-top: 8px; font-size: 0.9em; color: #555;">${bindingsSummary}</div>
+                    <strong>Bindings (${bindings.length})</strong>
+                    <div class="connection-meta">${escapeHtml(bindingsSummary)}</div>
                 </div>
             </div>
         `;
@@ -567,15 +673,12 @@ function editVirtualTool(name) {
     document.getElementById('vt-modal-name').disabled = true;
     document.getElementById('vt-modal-description').value = vt.description || '';
     document.getElementById('vt-modal-original-name').value = name;
-    document.getElementById('vt-modal-delete-btn').style.display = 'inline-block';
+    document.getElementById('vt-modal-delete-btn').style.display = 'inline-flex';
 
-    // Render existing bindings
     const bindingsContainer = document.getElementById('vt-bindings-list');
     bindingsContainer.innerHTML = '';
     vtBindingCounter = 0;
-    (vt.bindings || []).forEach(binding => {
-        addVirtualToolBinding(binding.device_id, binding.tool);
-    });
+    (vt.bindings || []).forEach(binding => addVirtualToolBinding(binding.device_id, binding.tool));
 
     document.getElementById('virtual-tool-modal').classList.add('show');
 }
@@ -588,29 +691,25 @@ function addVirtualToolBinding(deviceId = '', toolName = '') {
     const container = document.getElementById('vt-bindings-list');
     const id = vtBindingCounter++;
 
-    // Build device options
     const deviceOptions = currentDevices
         .filter(d => d.online)
-        .map(d => `<option value="${d.device_id}" ${d.device_id === deviceId ? 'selected' : ''}>${d.name || d.device_id}</option>`)
+        .map(d => `<option value="${escapeHtml(d.device_id)}" ${d.device_id === deviceId ? 'selected' : ''}>${escapeHtml(d.name || d.device_id)}</option>`)
         .join('');
 
-    // Build tool options (will be populated when device changes)
-    const toolOptions = deviceId ? buildToolOptions(deviceId, toolName) : '<option value="">-- Select device first --</option>';
+    const toolOptions = deviceId ? buildToolOptions(deviceId, toolName) : '<option value="">Select device first</option>';
 
     const bindingHtml = `
         <div class="form-row" id="vt-binding-${id}" style="margin-bottom: 10px; align-items: center;">
-            <div class="form-group" style="flex: 1;">
+            <div class="form-group" style="flex: 1; margin-bottom: 0;">
                 <select id="vt-binding-device-${id}" onchange="updateToolOptions(${id})">
-                    <option value="">-- Select Device --</option>
+                    <option value="">Select Device</option>
                     ${deviceOptions}
                 </select>
             </div>
-            <div class="form-group" style="flex: 1;">
-                <select id="vt-binding-tool-${id}">
-                    ${toolOptions}
-                </select>
+            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                <select id="vt-binding-tool-${id}">${toolOptions}</select>
             </div>
-            <button class="btn btn-danger btn-sm" onclick="removeVirtualToolBinding(${id})" style="padding: 5px 10px;">[X]</button>
+            <button class="btn btn-danger" onclick="removeVirtualToolBinding(${id})" type="button">Delete</button>
         </div>
     `;
     container.insertAdjacentHTML('beforeend', bindingHtml);
@@ -618,17 +717,15 @@ function addVirtualToolBinding(deviceId = '', toolName = '') {
 
 function buildToolOptions(deviceId, selectedTool = '') {
     const device = currentDevices.find(d => d.device_id === deviceId);
-    if (!device || !device.tools) return '<option value="">-- No tools --</option>';
+    if (!device || !device.tools) return '<option value="">No tools</option>';
 
-    return device.tools.map(t =>
-        `<option value="${t.name}" ${t.name === selectedTool ? 'selected' : ''}>${t.name}</option>`
-    ).join('');
+    return device.tools.map(t => `<option value="${escapeHtml(t.name)}" ${t.name === selectedTool ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('');
 }
 
 function updateToolOptions(id) {
     const deviceId = document.getElementById(`vt-binding-device-${id}`).value;
     const toolSelect = document.getElementById(`vt-binding-tool-${id}`);
-    toolSelect.innerHTML = deviceId ? buildToolOptions(deviceId) : '<option value="">-- Select device first --</option>';
+    toolSelect.innerHTML = deviceId ? buildToolOptions(deviceId) : '<option value="">Select device first</option>';
 }
 
 function removeVirtualToolBinding(id) {
@@ -638,18 +735,12 @@ function removeVirtualToolBinding(id) {
 
 function collectBindings() {
     const bindings = [];
-    const bindingRows = document.querySelectorAll('[id^="vt-binding-"]');
-
-    bindingRows.forEach(row => {
+    document.querySelectorAll('[id^="vt-binding-"]').forEach(row => {
         const id = row.id.replace('vt-binding-', '');
         const deviceId = document.getElementById(`vt-binding-device-${id}`)?.value;
         const toolName = document.getElementById(`vt-binding-tool-${id}`)?.value;
-
-        if (deviceId && toolName) {
-            bindings.push({ device_id: deviceId, tool: toolName });
-        }
+        if (deviceId && toolName) bindings.push({ device_id: deviceId, tool: toolName });
     });
-
     return bindings;
 }
 
@@ -665,34 +756,26 @@ async function saveVirtualTool() {
     }
 
     try {
-        showLoading(true);
-
         const data = { name, description, bindings };
-
         if (originalName) {
-            // Update
-            await fetch(`/api/virtual-tools/${originalName}`, {
+            await fetchJson(`/api/virtual-tools/${originalName}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
             showAlert('Virtual tool updated', 'success');
         } else {
-            // Create
-            await fetch('/api/virtual-tools', {
+            await fetchJson('/api/virtual-tools', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
             showAlert('Virtual tool created', 'success');
         }
-
         closeVirtualToolModal();
-        loadVirtualToolsData();
+        loadVirtualToolsData({ silent: true });
     } catch (e) {
         showAlert('Save failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
@@ -701,36 +784,36 @@ async function deleteVirtualTool() {
     if (!name || !confirm(`Delete virtual tool "${name}"?`)) return;
 
     try {
-        showLoading(true);
-        await fetch(`/api/virtual-tools/${name}`, { method: 'DELETE' });
+        await fetchJson(`/api/virtual-tools/${name}`, { method: 'DELETE' });
         showAlert('Virtual tool deleted', 'success');
         closeVirtualToolModal();
-        loadVirtualToolsData();
+        loadVirtualToolsData({ silent: true });
     } catch (e) {
         showAlert('Delete failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
 async function quickDeleteVirtualTool(name) {
     if (!confirm(`Delete virtual tool "${name}"?`)) return;
-
     try {
-        showLoading(true);
-        await fetch(`/api/virtual-tools/${name}`, { method: 'DELETE' });
+        await fetchJson(`/api/virtual-tools/${name}`, { method: 'DELETE' });
         showAlert('Virtual tool deleted', 'success');
-        loadVirtualToolsData();
+        loadVirtualToolsData({ silent: true });
     } catch (e) {
         showAlert('Delete failed: ' + e.message, 'error');
-    } finally {
-        showLoading(false);
     }
 }
 
-// ===== Init =====
-window.onload = function () {
-    checkStatus();
-    setInterval(checkStatus, 10000);
-    loadToolsData();
+window.onbeforeunload = function (e) {
+    if (projectionDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+};
+
+window.onload = async function () {
+    setDirty(false);
+    connectRealtime();
+    await loadConnectionsData();
+    addActivity('HAMPTER Manager ready');
 };

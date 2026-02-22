@@ -4,150 +4,184 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Project Saba MCP Manager</title>
+    <title>HAMPTER Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Project Saba // MCP Manager</h1>
-            <div class="subtitle">IoT Device Tool Projection & Port Routing Control</div>
-            <div class="status-bar">
-                <span id="bridge-status" class="status-badge status-offline">Bridge: Checking...</span>
-                <span id="docker-status" class="status-badge status-offline">Docker: Checking...</span>
+    <div class="app-shell">
+        <header class="topbar">
+            <div>
+                <h1>HAMPTER Manager</h1>
+                <p class="subtitle">Device Projection, Routing, and Virtual Tool Control</p>
             </div>
-        </div>
+            <div class="status-cluster">
+                <span id="bridge-status" class="status-chip offline"><span class="led"></span>Bridge checking</span>
+                <span id="docker-status" class="status-chip offline"><span class="led"></span>Docker checking</span>
+                <span id="stream-status" class="stream-chip offline">Realtime: disconnected</span>
+                <span id="dirty-indicator" class="dirty-chip">Unsaved changes</span>
+            </div>
+        </header>
 
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('tools')">Tool Projection</button>
+        <nav class="tabs">
+            <button class="tab active" onclick="switchTab('connections')">Connections</button>
+            <button class="tab" onclick="switchTab('tools')">Tool Projection</button>
             <button class="tab" onclick="switchTab('matrix')">Routing Matrix</button>
-            <button class="tab" onclick="switchTab('connections')">Connections</button>
             <button class="tab" onclick="switchTab('virtual')">Virtual Tools</button>
-        </div>
+        </nav>
 
-        <div id="alert" class="alert"></div>
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <div>Loading...</div>
-        </div>
+        <section id="alert" class="alert"></section>
 
-        <!-- Tool Projection Tab -->
-        <div id="tab-tools" class="tab-content active">
-            <div class="section">
-                <div class="section-header">
-                    <span>Device List & Projection Settings</span>
-                    <div style="display: flex; gap: 15px; align-items: center;">
-                        <label style="font-size: 0.8em; cursor: pointer; display: flex; align-items: center;">
-                            <input type="checkbox" id="show-offline-devices" onchange="renderDevices()">
-                            Show Offline Devices
-                        </label>
-                        <button class="btn btn-primary btn-sm" onclick="loadToolsData()">[REFRESH]</button>
-                    </div>
-                </div>
-                <div class="section-content">
-                    <div id="devices-container">Loading devices...</div>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-header">Global Settings</div>
-                <div class="section-content">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                        <label><input type="checkbox" id="auto-enable-devices"> Auto-enable new devices</label>
-                        <label><input type="checkbox" id="auto-enable-tools"> Auto-enable new tools</label>
-                    </div>
-                </div>
-            </div>
-
-            <div class="actions">
-                <button class="btn btn-success" onclick="saveProjectionConfig()">[SAVE SETTINGS]</button>
-                <button class="btn btn-primary" onclick="reloadBridgeConfig()">[RELOAD CONFIG]</button>
-                <button class="btn btn-warning" onclick="restartBridge()">[RESTART BRIDGE]</button>
-            </div>
-        </div>
-
-        <!-- Routing Matrix Tab -->
-        <div id="tab-matrix" class="tab-content">
-            <div class="section">
-                <div class="section-header">
-                    <span>Port Routing Matrix</span>
-                    <button class="btn btn-primary btn-sm" onclick="loadMatrixData()">[REFRESH]</button>
-                </div>
-                <div class="section-content">
-                    <div class="stats-grid" id="matrix-stats">
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-outports">0</div>
-                            <div class="stat-label">OutPorts</div>
+        <div class="content-grid">
+            <main>
+                <!-- Connections Tab -->
+                <section id="tab-connections" class="tab-content active">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <h2>Active Connections</h2>
+                                <p>Primary workspace for routing operations.</p>
+                            </div>
+                            <div class="panel-actions">
+                                <input type="text" id="connections-search" placeholder="Search source, target, description" oninput="renderConnections()">
+                                <button class="btn btn-secondary" onclick="showAddConnectionModal()">Add Connection</button>
+                                <button class="btn" onclick="loadConnectionsData()">Refresh</button>
+                            </div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-inports">0</div>
-                            <div class="stat-label">InPorts</div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-value" id="stat-connections">0</div>
-                            <div class="stat-label">Connections</div>
+                        <div class="panel-body">
+                            <div id="connections-list">Loading connections...</div>
                         </div>
                     </div>
-                    <div class="matrix-container" style="margin-top: 20px;">
-                        <table class="matrix-table" id="routing-matrix">
-                            <thead>
-                                <tr>
-                                    <th>OutPort \\ InPort</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                    <p style="margin-top: 15px; color: #666; font-size: 0.9em;">
-                        * Click on a cell to connect/disconnect ports. Dark = connected.
-                    </p>
-                </div>
-            </div>
-        </div>
+                </section>
 
-        <!-- Connections Tab -->
-        <div id="tab-connections" class="tab-content">
-            <div class="section">
-                <div class="section-header">
-                    <span>Active Connections</span>
-                    <div>
-                        <button class="btn btn-success btn-sm" onclick="showAddConnectionModal()">[ADD
-                            CONNECTION]</button>
-                        <button class="btn btn-primary btn-sm" onclick="loadConnectionsData()">[REFRESH]</button>
+                <!-- Tool Projection Tab -->
+                <section id="tab-tools" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <h2>Device Projection</h2>
+                                <p>Rename, describe, and enable tools exposed to MCP.</p>
+                            </div>
+                            <div class="panel-actions">
+                                <input type="text" id="device-search" placeholder="Search device or tool" oninput="renderDevices()">
+                                <label class="checkbox-inline"><input type="checkbox" id="show-offline-devices" onchange="renderDevices()"> Show offline</label>
+                                <button class="btn" onclick="loadToolsData()">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div id="devices-container">Loading devices...</div>
+                        </div>
                     </div>
-                </div>
-                <div class="section-content">
-                    <div id="connections-list">Loading connections...</div>
-                </div>
-            </div>
-        </div>
 
-        <!-- Virtual Tools Tab -->
-        <div id="tab-virtual" class="tab-content">
-            <div class="section">
-                <div class="section-header">
-                    <span>Virtual Tools</span>
-                    <div>
-                        <button class="btn btn-success btn-sm" onclick="showAddVirtualToolModal()">[ADD VIRTUAL
-                            TOOL]</button>
-                        <button class="btn btn-primary btn-sm" onclick="loadVirtualToolsData()">[REFRESH]</button>
+                    <div class="panel compact">
+                        <div class="panel-body split">
+                            <label class="checkbox-inline"><input type="checkbox" id="auto-enable-devices"> Auto-enable new devices</label>
+                            <label class="checkbox-inline"><input type="checkbox" id="auto-enable-tools"> Auto-enable new tools</label>
+                        </div>
                     </div>
-                </div>
-                <div class="section-content">
-                    <p style="color: #666; font-size: 0.9em; margin-bottom: 15px;">
-                        Virtual Tools execute multiple device tools in parallel with a single call.
-                    </p>
-                    <div id="virtual-tools-list">Loading virtual tools...</div>
-                </div>
-            </div>
+
+                    <div class="toolbar">
+                        <button class="btn btn-primary" onclick="saveProjectionConfig()">Save changes</button>
+                        <button class="btn" onclick="reloadBridgeConfig()">Reload bridge config</button>
+                        <button class="btn btn-danger" onclick="restartBridge()">Restart bridge</button>
+                    </div>
+                </section>
+
+                <!-- Matrix Tab -->
+                <section id="tab-matrix" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <h2>Routing Matrix</h2>
+                                <p>Secondary overview for quick mapping checks.</p>
+                            </div>
+                            <div class="panel-actions">
+                                <button class="btn" onclick="loadMatrixData()">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div class="stats-grid" id="matrix-stats">
+                                <div class="stat-card">
+                                    <div class="stat-value" id="stat-outports">0</div>
+                                    <div class="stat-label">OutPorts</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value" id="stat-inports">0</div>
+                                    <div class="stat-label">InPorts</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value" id="stat-connections">0</div>
+                                    <div class="stat-label">Connections</div>
+                                </div>
+                            </div>
+                            <div class="matrix-wrap">
+                                <table class="matrix-table" id="routing-matrix">
+                                    <thead>
+                                        <tr>
+                                            <th>OutPort / InPort</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Virtual Tools Tab -->
+                <section id="tab-virtual" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <h2>Virtual Tools</h2>
+                                <p>Bundle multiple device tools and run them together.</p>
+                            </div>
+                            <div class="panel-actions">
+                                <button class="btn btn-secondary" onclick="showAddVirtualToolModal()">Add Virtual Tool</button>
+                                <button class="btn" onclick="loadVirtualToolsData()">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div id="virtual-tools-list">Loading virtual tools...</div>
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            <aside class="side-panel">
+                <section class="panel compact">
+                    <div class="panel-header mini">
+                        <h3>Realtime Stats</h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="live-stats">
+                            <div><span>Devices</span><strong id="live-devices">0</strong></div>
+                            <div><span>Online</span><strong id="live-online">0</strong></div>
+                            <div><span>Connections</span><strong id="live-connections">0</strong></div>
+                            <div><span>Virtual Tools</span><strong id="live-vtools">0</strong></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel compact">
+                    <div class="panel-header mini">
+                        <h3>Activity</h3>
+                    </div>
+                    <div class="panel-body">
+                        <ul id="activity-log" class="activity-log"></ul>
+                    </div>
+                </section>
+            </aside>
         </div>
     </div>
 
     <!-- Connection Modal -->
     <div id="connection-modal" class="modal">
         <div class="modal-content">
-            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
             <div class="modal-header" id="modal-title">Add Connection</div>
 
             <div class="form-group">
@@ -162,19 +196,19 @@
 
             <div class="form-row">
                 <div class="form-group">
-                    <label>Scale (multiply)</label>
-                    <input type="number" id="modal-scale" step="0.1" placeholder="e.g., 2.0">
+                    <label>Scale</label>
+                    <input type="number" id="modal-scale" step="0.1" placeholder="2.0">
                 </div>
                 <div class="form-group">
-                    <label>Offset (add)</label>
-                    <input type="number" id="modal-offset" step="0.1" placeholder="e.g., 10">
+                    <label>Offset</label>
+                    <input type="number" id="modal-offset" step="0.1" placeholder="10">
                 </div>
             </div>
 
             <div class="form-row">
                 <div class="form-group">
                     <label>Threshold</label>
-                    <input type="number" id="modal-threshold" step="0.1" placeholder="e.g., 5.0">
+                    <input type="number" id="modal-threshold" step="0.1" placeholder="5.0">
                 </div>
                 <div class="form-group">
                     <label>Enabled</label>
@@ -192,10 +226,9 @@
 
             <input type="hidden" id="modal-connection-id">
 
-            <div class="actions">
-                <button class="btn btn-success" onclick="saveConnection()">[SAVE]</button>
-                <button class="btn btn-danger" id="modal-delete-btn" style="display:none;"
-                    onclick="deleteConnection()">[DELETE]</button>
+            <div class="toolbar">
+                <button class="btn btn-primary" onclick="saveConnection()">Save</button>
+                <button class="btn btn-danger" id="modal-delete-btn" style="display:none;" onclick="deleteConnection()">Delete</button>
             </div>
         </div>
     </div>
@@ -203,13 +236,12 @@
     <!-- Virtual Tool Modal -->
     <div id="virtual-tool-modal" class="modal">
         <div class="modal-content">
-            <span class="modal-close" onclick="closeVirtualToolModal()">&times;</span>
+            <button class="modal-close" onclick="closeVirtualToolModal()">&times;</button>
             <div class="modal-header" id="vt-modal-title">Add Virtual Tool</div>
 
             <div class="form-group">
-                <label>Name (identifier)</label>
-                <input type="text" id="vt-modal-name" placeholder="e.g., broadcast_emotion"
-                    style="font-family: monospace;">
+                <label>Name</label>
+                <input type="text" id="vt-modal-name" placeholder="broadcast_emotion" class="mono">
             </div>
 
             <div class="form-group">
@@ -218,20 +250,16 @@
             </div>
 
             <div class="form-group">
-                <label>Tool Bindings</label>
-                <p style="font-size: 0.85em; color: #666; margin-bottom: 10px;">Add device tools that will be executed
-                    in parallel.</p>
+                <label>Bindings</label>
                 <div id="vt-bindings-list"></div>
-                <button class="btn btn-primary btn-sm" onclick="addVirtualToolBinding()" style="margin-top: 10px;">[+
-                    ADD BINDING]</button>
+                <button class="btn btn-secondary" onclick="addVirtualToolBinding()">Add binding</button>
             </div>
 
             <input type="hidden" id="vt-modal-original-name">
 
-            <div class="actions">
-                <button class="btn btn-success" onclick="saveVirtualTool()">[SAVE]</button>
-                <button class="btn btn-danger" id="vt-modal-delete-btn" style="display:none;"
-                    onclick="deleteVirtualTool()">[DELETE]</button>
+            <div class="toolbar">
+                <button class="btn btn-primary" onclick="saveVirtualTool()">Save</button>
+                <button class="btn btn-danger" id="vt-modal-delete-btn" style="display:none;" onclick="deleteVirtualTool()">Delete</button>
             </div>
         </div>
     </div>

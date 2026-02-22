@@ -24,7 +24,7 @@ def main():
             active_port = pf
             
     log(f"[boot] python={sys.version}")
-    log(f"[boot] MCP Manager API_PORT={active_port}")
+    log(f"[boot] HAMPTER Manager API_PORT={active_port}")
     log(f"[boot] PROJECTION_CONFIG_PATH={PROJECTION_CONFIG_PATH}")
     log(f"[boot] ROUTING_CONFIG_PATH={ROUTING_CONFIG_PATH}")
     log(f"[boot] BRIDGE_API_URL={BRIDGE_API_URL}")

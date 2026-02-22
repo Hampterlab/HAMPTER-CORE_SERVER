@@ -32,6 +32,24 @@ class BridgeAPIClient:
         except Exception as e:
             log(f"[BRIDGE_API] Error getting routing: {e}")
             return {"outports": [], "inports": [], "matrix": {}, "connection_count": 0}
+
+    def get_connections(self) -> List[Dict[str, Any]]:
+        try:
+            response = requests.get(f"{self.base_url}/routing/connections", timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            log(f"[BRIDGE_API] Error getting connections: {e}")
+            return []
+
+    def get_virtual_tools(self) -> Dict[str, Any]:
+        try:
+            response = requests.get(f"{self.base_url}/virtual-tools", timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            log(f"[BRIDGE_API] Error getting virtual tools: {e}")
+            return {}
     
     def connect_ports(self, source: str, target: str, transform: dict = None, description: str = "", enabled: bool = True) -> Dict[str, Any]:
         try:

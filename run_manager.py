@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Project Saba MCP Manager
+HAMPTER Manager
 Refactored into 'mcp_manager' package.
 """
 import sys
