@@ -4,7 +4,18 @@ import uuid
 import json
 import paho.mqtt.client as mqtt
 from typing import Optional, Callable
-from .config import MQTT_HOST, MQTT_PORT, KEEPALIVE, SUB_ALL, TOPIC_ANN, TOPIC_STAT, TOPIC_EV, TOPIC_PORTS_ANN, TOPIC_PORTS_DATA
+from .config import (
+    MQTT_HOST,
+    MQTT_PORT,
+    KEEPALIVE,
+    SUB_ALL,
+    TOPIC_ANN,
+    TOPIC_STAT,
+    TOPIC_EV,
+    TOPIC_PORTS_ANN,
+    TOPIC_PORTS_DATA,
+    TOPIC_PORTS_STATE,
+)
 from .utils import log
 from .device_store import DeviceStore
 from .command import CommandWaiter
@@ -85,6 +96,7 @@ def start_mqtt_listener(device_store: DeviceStore, cmd_waiter: CommandWaiter, po
                 c.subscribe(TOPIC_EV)
                 c.subscribe(TOPIC_PORTS_ANN)
                 c.subscribe(TOPIC_PORTS_DATA)
+                c.subscribe(TOPIC_PORTS_STATE)
 
         def on_message(c, userdata, msg):
             # if "ports/data" not in msg.topic:

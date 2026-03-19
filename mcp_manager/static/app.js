@@ -4,6 +4,7 @@ let routingData = { matrix: {}, connection_count: 0 };
 let connections = [];
 let currentDevices = [];
 let virtualToolsData = {};
+let portDebugData = { router_stats: {}, snapshot: { latest_outports: [], latest_inports: [], recent_events: [] } };
 let vtBindingCounter = 0;
 let activeTab = 'connections';
 let projectionDirty = false;
@@ -16,6 +17,7 @@ const inFlight = {
     matrix: false,
     connections: false,
     virtual: false,
+    portDebug: false,
 };
 
 function escapeHtml(value) {
@@ -87,6 +89,7 @@ function switchTab(tabName) {
     if (tabName === 'tools') loadToolsData();
     else if (tabName === 'matrix') loadMatrixData();
     else if (tabName === 'connections') loadConnectionsData();
+    else if (tabName === 'ports') loadPortDebugData();
     else if (tabName === 'virtual') loadVirtualToolsData();
 }
 
@@ -160,6 +163,7 @@ function connectRealtime() {
             updateLiveStats(snap.counts || {});
             setStreamStatus(true);
             refreshByRevisions(snap.revisions || {});
+            if (activeTab === 'ports') loadPortDebugData({ silent: true });
         } catch (e) {
             console.error('snapshot parse error', e);
         }
@@ -167,6 +171,7 @@ function connectRealtime() {
 
     realtimeSource.addEventListener('ping', () => {
         setStreamStatus(true);
+        if (activeTab === 'ports') loadPortDebugData({ silent: true });
     });
 
     realtimeSource.onerror = () => {
@@ -442,6 +447,94 @@ async function loadConnectionsData(options = {}) {
     } finally {
         inFlight.connections = false;
     }
+}
+
+async function loadPortDebugData(options = {}) {
+    if (inFlight.portDebug) return;
+    inFlight.portDebug = true;
+    try {
+        const limit = parseInt(document.getElementById('port-debug-limit')?.value || '50', 10);
+        portDebugData = await fetchJson(`/api/port-debug?limit=${Number.isFinite(limit) ? limit : 50}`);
+        renderPortDebug();
+        if (!options.silent) addActivity('Port debug refreshed');
+    } catch (e) {
+        showAlert('Failed to load port debug: ' + e.message, 'error');
+    } finally {
+        inFlight.portDebug = false;
+    }
+}
+
+function renderPortDebug() {
+    const stats = portDebugData.router_stats || {};
+    const snapshot = portDebugData.snapshot || {};
+    const latestOutports = snapshot.latest_outports || [];
+    const latestInports = snapshot.latest_inports || [];
+    const recentEvents = snapshot.recent_events || [];
+
+    document.getElementById('port-queued').textContent = stats.queued ?? 0;
+    document.getElementById('port-processed').textContent = stats.processed ?? 0;
+    document.getElementById('port-routed').textContent = stats.total_routed ?? 0;
+    document.getElementById('port-dropped').textContent = (stats.total_dropped ?? 0) + (stats.enqueue_dropped ?? 0);
+
+    document.getElementById('port-debug-out-count').textContent = latestOutports.length;
+    document.getElementById('port-debug-in-count').textContent = latestInports.length;
+    document.getElementById('port-debug-event-count').textContent = recentEvents.length;
+
+    const outContainer = document.getElementById('port-debug-outports');
+    if (latestOutports.length === 0) {
+        outContainer.innerHTML = '<p>No outport values observed yet.</p>';
+    } else {
+        outContainer.innerHTML = latestOutports.map(item => `
+            <div class="debug-item">
+                <div class="debug-item-head">
+                    <span class="port-badge out">${escapeHtml(item.port_id)}</span>
+                    <span class="debug-time">${escapeHtml(item.last_seen || '-')}</span>
+                </div>
+                <div class="debug-item-meta mono">value=${escapeHtml(item.value)} protocol=${escapeHtml(item.protocol || '-')}</div>
+            </div>
+        `).join('');
+    }
+
+    const inContainer = document.getElementById('port-debug-inports');
+    if (latestInports.length === 0) {
+        inContainer.innerHTML = '<p>No inport dispatch recorded yet.</p>';
+    } else {
+        inContainer.innerHTML = latestInports.map(item => `
+            <div class="debug-item">
+                <div class="debug-item-head">
+                    <span class="port-badge in">${escapeHtml(item.port_id)}</span>
+                    <span class="state-pill ${item.last_bridge_success ? 'on' : 'off'}">${item.last_bridge_success ? 'PUBLISHED' : 'FAILED'}</span>
+                </div>
+                <div class="debug-item-meta mono">value=${escapeHtml(item.last_bridge_value ?? '-')} transport=${escapeHtml(item.last_bridge_transport || '-')}</div>
+                <div class="debug-item-sub">${escapeHtml(item.last_bridge_at || '-')}</div>
+            </div>
+        `).join('');
+    }
+
+    const eventsContainer = document.getElementById('port-debug-events');
+    if (recentEvents.length === 0) {
+        eventsContainer.innerHTML = '<p>No recent port events.</p>';
+    } else {
+        eventsContainer.innerHTML = recentEvents.slice().reverse().map(event => `
+            <div class="event-row">
+                <div class="event-top">
+                    <span class="event-type">${escapeHtml(event.type)}</span>
+                    <span class="debug-time">${escapeHtml(event.timestamp || '-')}</span>
+                </div>
+                <div class="event-body mono">${escapeHtml(formatPortEvent(event))}</div>
+            </div>
+        `).join('');
+    }
+}
+
+function formatPortEvent(event) {
+    if (!event || !event.type) return '';
+    if (event.type === 'outport_value') return `${event.port_id} value=${event.value} via ${event.protocol}`;
+    if (event.type === 'inport_dispatch') return `${event.port_id} value=${event.value} transport=${event.transport} success=${event.success}`;
+    if (event.type === 'route_result') return `${event.source_port_id} -> ${event.target_port_id} input=${event.input_value} output=${event.output_value} success=${event.success}`;
+    if (event.type === 'route_queue') return `${event.source_port_id} value=${event.value} enqueued=${event.enqueued} queue=${event.queue_size}`;
+    if (event.type === 'ports_announce') return `${event.device_id} outports=${event.outports} inports=${event.inports}`;
+    return JSON.stringify(event);
 }
 
 function renderConnections() {

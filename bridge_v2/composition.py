@@ -32,11 +32,16 @@ def build_runtime_context() -> RuntimeContext:
 
     def hybrid_publish(device_id: str, port: str, value: float) -> bool:
         d = device_store.get(device_id)
+        transport = "mqtt"
         if d and d.get("protocol") == "ipc":
-            return ipc_agent.send_port_set(device_id, port, value)
-        return publish_to_inport(device_id, port, value)
+            transport = "ipc"
+            success = ipc_agent.send_port_set(device_id, port, value)
+        else:
+            success = publish_to_inport(device_id, port, value)
+        port_store.record_inport_dispatch(device_id, port, value, transport=transport, success=success)
+        return success
 
-    base_router = PortRouter(routing_matrix, hybrid_publish)
+    base_router = PortRouter(routing_matrix, hybrid_publish, debug_store=port_store)
     route_workers = int(os.getenv("ROUTE_WORKERS", "2"))
     route_queue_size = int(os.getenv("ROUTE_QUEUE_SIZE", "5000"))
     port_router = AsyncPortRouter(base_router, workers=route_workers, queue_size=route_queue_size)

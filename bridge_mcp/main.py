@@ -1,6 +1,7 @@
 import os
 import sys
 import socket
+from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from http import HTTPStatus
@@ -27,12 +28,34 @@ def main():
     routing_service = ctx.routing_service
     device_sessions = ctx.device_sessions
     
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if hasattr(server.mcp, "streamable_http_app"):
+            # Ensure the session manager exists before startup.
+            server.mcp.streamable_http_app()
+            async with server.mcp.session_manager.run():
+                yield
+        else:
+            yield
+
     # 5. Initialize FastAPI App
-    app = FastAPI(title="Bridge MCP (SSE + Port Routing API)")
+    app = FastAPI(title="Bridge MCP (SSE + Port Routing API)", lifespan=lifespan)
     
     @app.get("/healthz")
     def healthz():
         return {"ok": True, "ts": now_iso(), "service": "mcp-bridge", "port": API_PORT}
+
+    @app.get("/")
+    def root():
+        return {
+            "ok": True,
+            "service": "mcp-bridge",
+            "transports": {
+                "streamable_http": "/mcp",
+                "sse": "/sse",
+            },
+            "note": "Use a public HTTPS URL for ChatGPT remote MCP connections.",
+        }
 
     # ========= API Endpoints for Devices =========
     @app.get("/devices")
@@ -65,6 +88,14 @@ def main():
         if not ports:
             raise HTTPException(HTTPStatus.NOT_FOUND, "device ports not found")
         return ports
+
+    @app.get("/port-debug")
+    def get_ports_debug_api(limit: int = 50):
+        """Get recent port telemetry for debugging."""
+        return {
+            "router_stats": ctx.port_router.get_stats(),
+            "snapshot": port_store.get_debug_snapshot(limit=limit),
+        }
 
     # ========= API Endpoints for Routing Matrix =========
     @app.get("/routing")
@@ -196,7 +227,23 @@ def main():
         """Get routing statistics"""
         return routing_service.get_stats()
     
-    # Mount MCP SSE endpoint
+    # Mount the FastMCP streamable app at root because the sub-app already serves
+    # its own /mcp route internally.
+    try:
+        if hasattr(server.mcp, "streamable_http_app"):
+            streamable_app = server.mcp.streamable_http_app()
+            app.mount("/", streamable_app)
+            log("[MCP] Streamable HTTP endpoint mounted successfully at /mcp")
+        elif hasattr(server.mcp, "http_app"):
+            streamable_app = server.mcp.http_app(transport="streamable-http")
+            app.mount("/", streamable_app)
+            log("[MCP] Streamable HTTP endpoint mounted successfully at /mcp via http_app")
+        else:
+            log("[MCP] Streamable HTTP endpoint is not available in this FastMCP version")
+    except Exception as e:
+        log(f"[MCP] Failed to mount Streamable HTTP endpoint: {e}")
+
+    # Mount MCP SSE endpoint for existing Claude Desktop compatibility.
     try:
         sse_app = server.mcp.sse_app()
         app.mount("/sse", sse_app)
@@ -218,6 +265,7 @@ def main():
     log(f"[boot] MQTT_HOST={MQTT_HOST} MQTT_PORT={MQTT_PORT} KEEPALIVE={KEEPALIVE} API_PORT={ACTIVE_API_PORT}")
     log(f"[boot] PROJECTION_CONFIG_PATH={PROJECTION_CONFIG_PATH}")
     log(f"[boot] ROUTING_CONFIG_PATH={ROUTING_CONFIG_PATH}")
+    log(f"[boot] MCP Streamable HTTP endpoint: http://0.0.0.0:{ACTIVE_API_PORT}/mcp")
     log(f"[boot] MCP SSE endpoint: http://0.0.0.0:{ACTIVE_API_PORT}/sse")
     
     uvicorn.run(app, host="0.0.0.0", port=int(ACTIVE_API_PORT), log_level="warning", access_log=False)

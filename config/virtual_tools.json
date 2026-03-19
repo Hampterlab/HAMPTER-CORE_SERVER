@@ -1,36 +1,5 @@
 {
-  "virtual_tools": {
-    "voice_start": {
-      "description": "start_voice",
-      "bindings": [
-        {
-          "device_id": "ipc_agent_test",
-          "tool": "ipc_echo"
-        },
-        {
-          "device_id": "saba_audio_master",
-          "tool": "play_audio_Taiga"
-        }
-      ]
-    },
-    "vibe_led": {
-      "description": "LED 컨트롤 가상 툴",
-      "bindings": [
-        {
-          "device_id": "dev-8B52D8",
-          "tool": "create_pattern"
-        },
-        {
-          "device_id": "dev-8B52D8",
-          "tool": "change_slot"
-        },
-        {
-          "device_id": "dev-8B52D8",
-          "tool": "slot_status"
-        }
-      ]
-    }
-  },
+  "virtual_tools": {},
   "global": {
     "default_timeout_ms": 10000
   }

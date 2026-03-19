@@ -17,5 +17,6 @@ TOPIC_STAT = "mcp/dev/+/status"
 TOPIC_EV   = "mcp/dev/+/events"
 TOPIC_PORTS_ANN  = "mcp/dev/+/ports/announce"
 TOPIC_PORTS_DATA = "mcp/dev/+/ports/data"
+TOPIC_PORTS_STATE = "mcp/dev/+/ports/state"
 
 IPC_PORT = int(os.getenv("IPC_PORT", "8085"))

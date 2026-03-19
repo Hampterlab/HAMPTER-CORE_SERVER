@@ -80,6 +80,13 @@ class ProtocolHandler:
             if port_name is not None:
                 try:
                     val = float(value)
+                    self.port_store.record_outport_value(
+                        dev_id,
+                        str(port_name),
+                        val,
+                        protocol=protocol,
+                        timestamp=payload.get("timestamp"),
+                    )
                     if not self.port_router:
                         return ("ports_data", None)
                     routed = self.port_router.route(dev_id, port_name, val)
@@ -88,5 +95,24 @@ class ProtocolHandler:
                 except:
                     pass
             return ("ports_data", None)
+
+        elif leaf == "ports/state":
+            port_name = payload.get("port")
+            value = payload.get("value")
+            if port_name is not None and value is not None:
+                try:
+                    self.port_store.record_inport_ack(
+                        dev_id,
+                        str(port_name),
+                        float(value),
+                        accepted=bool(payload.get("accepted", True)),
+                        protocol=protocol,
+                        source=payload.get("source"),
+                        timestamp=payload.get("timestamp"),
+                    )
+                    return ("ports_state", dev_id)
+                except Exception:
+                    pass
+            return ("ports_state", None)
             
         return ("unknown", None)

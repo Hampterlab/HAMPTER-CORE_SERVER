@@ -7,7 +7,7 @@
     "tools": [
       {
         "name": "create_pattern",
-        "description": "Create and save a LED pattern to a persistent slot (1-5). The pattern is defined by mathematical expressions for Hue, Saturation, and Brightness. Variables: theta (0~2\u03c0), t (time in seconds), i (LED index 0~11). Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Logic: (expr) ? 1.0 : 0.0 for conditionals.",
+        "description": "Create and save a LED pattern to a persistent slot (1-5). The pattern is defined by mathematical expressions for Hue, Saturation, and Brightness. Variables: theta (0~2pi), t (time in seconds), i (LED index 0~11), pi, var_a, var_b, var_c. Operators: +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, !. Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Examples: 1. Police: hue=(sin(t*10)>0)*0+(sin(t*10)<=0)*4.2, sat=1, val=1 2. Comet: hue=t*0.5, sat=1, val=max(0,1-abs(mod(theta-t*5,2*pi))) 3. Pulse: hue=3.0, sat=1, val=(sin(t*2)+1)/2*var_a (var_a is audio)",
         "parameters": {
           "type": "object",
           "properties": {
@@ -76,7 +76,7 @@
       "tools": [
         {
           "name": "create_pattern",
-          "description": "Create and save a LED pattern to a persistent slot (1-5). The pattern is defined by mathematical expressions for Hue, Saturation, and Brightness. Variables: theta (0~2\u03c0), t (time in seconds), i (LED index 0~11). Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Logic: (expr) ? 1.0 : 0.0 for conditionals.",
+          "description": "Create and save a LED pattern to a persistent slot (1-5). The pattern is defined by mathematical expressions for Hue, Saturation, and Brightness. Variables: theta (0~2pi), t (time in seconds), i (LED index 0~11), pi, var_a, var_b, var_c. Operators: +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, !. Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Examples: 1. Police: hue=(sin(t*10)>0)*0+(sin(t*10)<=0)*4.2, sat=1, val=1 2. Comet: hue=t*0.5, sat=1, val=max(0,1-abs(mod(theta-t*5,2*pi))) 3. Pulse: hue=3.0, sat=1, val=(sin(t*2)+1)/2*var_a (var_a is audio)",
           "parameters": {
             "type": "object",
             "properties": {
@@ -139,8 +139,217 @@
         }
       ]
     },
-    "last_seen": "2026-02-09T14:54:14Z",
+    "last_seen": "2026-03-18T13:59:39Z",
     "protocol": "mqtt",
-    "secret_token": "Eq8cMurkzaK9XFHDSM4zzmQ0kzKaL0qt"
+    "secret_token": "Eq8cMurkzaK9XFHDSM4zzmQ0kzKaL0qt",
+    "online": true,
+    "uptime_ms": 1171854,
+    "rssi": -44,
+    "last_status": {
+      "type": "device.status",
+      "device_id": "dev-8B52D8",
+      "online": true,
+      "uptime_ms": 1171854,
+      "rssi": -44,
+      "ts": "2026-03-18T13:59:39Z"
+    }
+  },
+  "dev-D3A7C4": {
+    "device_id": "dev-D3A7C4",
+    "online": false,
+    "uptime_ms": 16373,
+    "rssi": null,
+    "last_status": {
+      "type": "device.status",
+      "device_id": "dev-D3A7C4",
+      "online": false,
+      "uptime_ms": 16373,
+      "ts": "1970-01-01T00:00:16Z"
+    },
+    "last_seen": "2026-03-18T13:45:25Z",
+    "name": null,
+    "version": null,
+    "http_base": "http://192.168.0.18",
+    "tools": [
+      {
+        "name": "read_temperature_humidity",
+        "description": "\ud604\uc7ac \uc628\ub3c4/\uc2b5\ub3c4\ub97c \uc77d\uace0 outport\ub85c \ub0b4\ubcf4\ub0b4\uba70, \ucd5c\uadfc 24\uc2dc\uac04\uc744 \uacc4\uce35\ud615 \uc694\uc57d \ubc84\ud37c(1min, 10min, 30min, 1hour, 6hour, 24hour)\ub85c \uc870\ud68c\ud569\ub2c8\ub2e4.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "window": {
+              "type": "string",
+              "description": "Optional. history resolution to return: 1min, 10min, 30min, 1hour, 6hour, 24hour. Omit for current value only."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Optional. Number of points to return. Default 20."
+            }
+          }
+        }
+      }
+    ],
+    "last_announce": {
+      "type": "device.announce",
+      "device_id": "dev-D3A7C4",
+      "http_base": "http://192.168.0.18",
+      "tools": [
+        {
+          "name": "read_temperature_humidity",
+          "description": "\ud604\uc7ac \uc628\ub3c4/\uc2b5\ub3c4\ub97c \uc77d\uace0 outport\ub85c \ub0b4\ubcf4\ub0b4\uba70, \ucd5c\uadfc 24\uc2dc\uac04\uc744 \uacc4\uce35\ud615 \uc694\uc57d \ubc84\ud37c(1min, 10min, 30min, 1hour, 6hour, 24hour)\ub85c \uc870\ud68c\ud569\ub2c8\ub2e4.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "window": {
+                "type": "string",
+                "description": "Optional. history resolution to return: 1min, 10min, 30min, 1hour, 6hour, 24hour. Omit for current value only."
+              },
+              "limit": {
+                "type": "integer",
+                "description": "Optional. Number of points to return. Default 20."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "protocol": "mqtt",
+    "secret_token": "lAzyLVEdl8mmDc3ukT9mWgmBtP3as0xS"
+  },
+  "dev-8AEFDC": {
+    "device_id": "dev-8AEFDC",
+    "name": null,
+    "version": null,
+    "http_base": "http://192.168.0.15",
+    "tools": [
+      {
+        "name": "create_pattern",
+        "description": "Play a LED pattern with mathematical expressions (temporary - not saved). Use this to test patterns or create one-time effects. Variables: theta (0~2\u03c0), t (time in seconds), i (LED index 0~11). Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Operators: +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, !. Examples:\n- Rotating rainbow: hue='theta+t', sat='1', brightness='0.5'\n- Half split (red/cyan): hue='(i < 6) * 0 + (i >= 6) * 3.14', sat='1', brightness='0.5'\n- Even LEDs only: brightness='(i % 2 == 0) * 1.0'\n- Pulsing: brightness='sin(t*2)*0.5+0.5'\n- Complex: hue='(i >= 3 && i <= 8) * (theta + t)', sat='1', brightness='0.8'",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "slot": {
+              "type": "integer",
+              "description": "Slot number to save to (1-5). Slot 0 is reserved."
+            },
+            "hue": {
+              "type": "string",
+              "description": "Expression for color (0~2\u03c0 color wheel)"
+            },
+            "saturation": {
+              "type": "string",
+              "description": "Expression for saturation (0~1)"
+            },
+            "brightness": {
+              "type": "string",
+              "description": "Expression for brightness (0~1)"
+            }
+          },
+          "required": [
+            "slot",
+            "hue",
+            "saturation",
+            "brightness"
+          ]
+        }
+      },
+      {
+        "name": "execute_pattern",
+        "description": "Execute a pattern from a slot. Slot 0 stops any pattern and returns to default blinking. Slots 1-5 play the saved pattern for the specified duration.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "slot": {
+              "type": "integer",
+              "description": "Slot number to execute (0-5)"
+            },
+            "duration": {
+              "type": "number",
+              "description": "Duration in seconds to play. Ignored for slot 0."
+            }
+          },
+          "required": [
+            "slot",
+            "duration"
+          ]
+        }
+      },
+      {
+        "name": "list_patterns",
+        "description": "List all saved patterns in slots 1-5.",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "last_announce": {
+      "type": "device.announce",
+      "device_id": "dev-8AEFDC",
+      "http_base": "http://192.168.0.15",
+      "tools": [
+        {
+          "name": "create_pattern",
+          "description": "Play a LED pattern with mathematical expressions (temporary - not saved). Use this to test patterns or create one-time effects. Variables: theta (0~2\u03c0), t (time in seconds), i (LED index 0~11). Functions: sin, cos, tan, abs, sqrt, floor, ceil, max(a,b), min(a,b), mod(a,b), pow(a,b). Operators: +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, !. Examples:\n- Rotating rainbow: hue='theta+t', sat='1', brightness='0.5'\n- Half split (red/cyan): hue='(i < 6) * 0 + (i >= 6) * 3.14', sat='1', brightness='0.5'\n- Even LEDs only: brightness='(i % 2 == 0) * 1.0'\n- Pulsing: brightness='sin(t*2)*0.5+0.5'\n- Complex: hue='(i >= 3 && i <= 8) * (theta + t)', sat='1', brightness='0.8'",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "integer",
+                "description": "Slot number to save to (1-5). Slot 0 is reserved."
+              },
+              "hue": {
+                "type": "string",
+                "description": "Expression for color (0~2\u03c0 color wheel)"
+              },
+              "saturation": {
+                "type": "string",
+                "description": "Expression for saturation (0~1)"
+              },
+              "brightness": {
+                "type": "string",
+                "description": "Expression for brightness (0~1)"
+              }
+            },
+            "required": [
+              "slot",
+              "hue",
+              "saturation",
+              "brightness"
+            ]
+          }
+        },
+        {
+          "name": "execute_pattern",
+          "description": "Execute a pattern from a slot. Slot 0 stops any pattern and returns to default blinking. Slots 1-5 play the saved pattern for the specified duration.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "integer",
+                "description": "Slot number to execute (0-5)"
+              },
+              "duration": {
+                "type": "number",
+                "description": "Duration in seconds to play. Ignored for slot 0."
+              }
+            },
+            "required": [
+              "slot",
+              "duration"
+            ]
+          }
+        },
+        {
+          "name": "list_patterns",
+          "description": "List all saved patterns in slots 1-5.",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "last_seen": "2026-03-18T14:00:00Z",
+    "protocol": "mqtt",
+    "secret_token": "tyWayYC9YuyTIAsxtSMq7FS0dLokYxxA"
   }
 }

@@ -161,6 +161,11 @@ def get_ports():
     return bridge_api.get_ports()
 
 
+@app.get("/api/port-debug")
+def get_port_debug(limit: int = 50):
+    return bridge_api.get_port_debug(limit=limit)
+
+
 @app.get("/api/routing")
 def get_routing():
     return bridge_api.get_routing()

@@ -10,6 +10,7 @@ import os
 import json
 import threading
 import queue
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List, Callable
 from pathlib import Path
@@ -78,7 +79,19 @@ class PortStore:
     
     def __init__(self):
         self._devices: Dict[str, Dict[str, Any]] = {}
+        self._latest_outport_values: Dict[str, Dict[str, Any]] = {}
+        self._latest_inport_values: Dict[str, Dict[str, Any]] = {}
+        self._recent_events = deque(maxlen=max(50, int(os.getenv("PORT_DEBUG_BUFFER_SIZE", "500"))))
         self._lock = threading.Lock()
+
+    def _append_event_unlocked(self, event_type: str, **data):
+        entry = {
+            "type": event_type,
+            "timestamp": data.pop("timestamp", now_iso()),
+            **data,
+        }
+        self._recent_events.append(entry)
+        return entry
     
     def upsert_ports_announce(self, device_id: str, msg: Dict[str, Any]):
         """ports.announce 메시지 처리"""
@@ -90,7 +103,143 @@ class PortStore:
                 "timestamp": msg.get("timestamp", now_iso()),
                 "last_seen": now_iso()
             }
+            self._append_event_unlocked(
+                "ports_announce",
+                device_id=device_id,
+                outports=len(msg.get("outports", [])),
+                inports=len(msg.get("inports", [])),
+            )
         # log(f"[PORT_STORE] Device {device_id}: {len(msg.get('outports', []))} outports, {len(msg.get('inports', []))} inports")
+
+    def record_outport_value(self, device_id: str, port_name: str, value: float, protocol: str, timestamp: str | None = None):
+        port_id = f"{device_id}/{port_name}"
+        ts = timestamp or now_iso()
+        with self._lock:
+            self._latest_outport_values[port_id] = {
+                "port_id": port_id,
+                "device_id": device_id,
+                "port_name": port_name,
+                "value": value,
+                "protocol": protocol,
+                "last_seen": ts,
+            }
+            self._append_event_unlocked(
+                "outport_value",
+                device_id=device_id,
+                port_id=port_id,
+                port_name=port_name,
+                value=value,
+                protocol=protocol,
+                timestamp=ts,
+            )
+
+    def record_inport_dispatch(
+        self,
+        device_id: str,
+        port_name: str,
+        value: float,
+        transport: str,
+        success: bool,
+        source_port_id: str | None = None,
+    ):
+        port_id = f"{device_id}/{port_name}"
+        ts = now_iso()
+        with self._lock:
+            current = self._latest_inport_values.get(port_id, {})
+            current.update(
+                {
+                    "port_id": port_id,
+                    "device_id": device_id,
+                    "port_name": port_name,
+                    "last_bridge_value": value,
+                    "last_bridge_transport": transport,
+                    "last_bridge_success": success,
+                    "last_bridge_at": ts,
+                }
+            )
+            if source_port_id:
+                current["last_source_port_id"] = source_port_id
+            self._latest_inport_values[port_id] = current
+            self._append_event_unlocked(
+                "inport_dispatch",
+                device_id=device_id,
+                port_id=port_id,
+                port_name=port_name,
+                value=value,
+                transport=transport,
+                success=success,
+                source_port_id=source_port_id,
+                timestamp=ts,
+            )
+
+    def record_inport_ack(
+        self,
+        device_id: str,
+        port_name: str,
+        value: float,
+        accepted: bool,
+        protocol: str,
+        source: str | None = None,
+        timestamp: str | None = None,
+    ):
+        port_id = f"{device_id}/{port_name}"
+        ts = timestamp or now_iso()
+        with self._lock:
+            current = self._latest_inport_values.get(port_id, {})
+            current.update(
+                {
+                    "port_id": port_id,
+                    "device_id": device_id,
+                    "port_name": port_name,
+                    "last_device_value": value,
+                    "last_device_accepted": accepted,
+                    "last_device_protocol": protocol,
+                    "last_device_source": source or "ports.state",
+                    "last_device_at": ts,
+                }
+            )
+            self._latest_inport_values[port_id] = current
+            self._append_event_unlocked(
+                "inport_ack",
+                device_id=device_id,
+                port_id=port_id,
+                port_name=port_name,
+                value=value,
+                accepted=accepted,
+                protocol=protocol,
+                source=source or "ports.state",
+                timestamp=ts,
+            )
+
+    def record_route_result(
+        self,
+        source_port_id: str,
+        target_port_id: str,
+        input_value: float,
+        output_value: float,
+        success: bool,
+        transform: Dict[str, Any] | None = None,
+    ):
+        with self._lock:
+            self._append_event_unlocked(
+                "route_result",
+                source_port_id=source_port_id,
+                target_port_id=target_port_id,
+                input_value=input_value,
+                output_value=output_value,
+                success=success,
+                transform=transform or {},
+            )
+
+    def record_router_queue(self, source_port_id: str, value: float, enqueued: bool, queue_size: int):
+        with self._lock:
+            self._append_event_unlocked(
+                "route_queue",
+                source_port_id=source_port_id,
+                value=value,
+                enqueued=enqueued,
+                queue_size=queue_size,
+            )
     
     def get_device_ports(self, device_id: str) -> Optional[Dict[str, Any]]:
         """특정 디바이스의 포트 정보 조회"""
@@ -140,6 +289,29 @@ class PortStore:
         """전체 데이터 dict 반환"""
         with self._lock:
             return json.loads(json.dumps(self._devices))
+
+    def get_debug_snapshot(self, limit: int = 50) -> Dict[str, Any]:
+        with self._lock:
+            outports = sorted(
+                self._latest_outport_values.values(),
+                key=lambda item: item.get("last_seen", ""),
+                reverse=True,
+            )
+            inports = sorted(
+                self._latest_inport_values.values(),
+                key=lambda item: max(item.get("last_device_at", ""), item.get("last_bridge_at", "")),
+                reverse=True,
+            )
+            recent_events = list(self._recent_events)[-max(1, limit):]
+            devices = list(self._devices.keys())
+
+        return {
+            "devices": devices,
+            "latest_outports": outports,
+            "latest_inports": inports,
+            "recent_events": recent_events,
+            "event_buffer_size": len(recent_events),
+        }
 
 
 # ========= Routing Matrix =========
@@ -389,7 +561,12 @@ class PortRouter:
     OutPort 데이터를 받아서 연결된 InPort로 라우팅
     """
     
-    def __init__(self, routing_matrix: RoutingMatrix, publish_callback: Callable[[str, str, float], bool]):
+    def __init__(
+        self,
+        routing_matrix: RoutingMatrix,
+        publish_callback: Callable[[str, str, float], bool],
+        debug_store: PortStore | None = None,
+    ):
         """
         Args:
             routing_matrix: 라우팅 매트릭스
@@ -398,6 +575,7 @@ class PortRouter:
         """
         self.routing_matrix = routing_matrix
         self.publish_callback = publish_callback
+        self.debug_store = debug_store
         self._stats = {
             "total_routed": 0,
             "total_dropped": 0,
@@ -444,6 +622,15 @@ class PortRouter:
             
             # InPort로 발행
             success = self.publish_callback(target_device_id, target_port_name, transformed_value)
+            if self.debug_store:
+                self.debug_store.record_route_result(
+                    source_port_id,
+                    target_port_id,
+                    value,
+                    transformed_value,
+                    success,
+                    transform_config,
+                )
             
             if success:
                 routed_count += 1
@@ -513,10 +700,26 @@ class AsyncPortRouter:
             with self._lock:
                 self._stats["queued"] += 1
                 self._stats["queue_size"] = self._q.qsize()
+                queue_size = self._stats["queue_size"]
+            if self.inner_router.debug_store:
+                self.inner_router.debug_store.record_router_queue(
+                    f"{source_device_id}/{source_port_name}",
+                    value,
+                    enqueued=True,
+                    queue_size=queue_size,
+                )
             return 1
         except queue.Full:
             with self._lock:
                 self._stats["enqueue_dropped"] += 1
+                queue_size = self._q.qsize()
+            if self.inner_router.debug_store:
+                self.inner_router.debug_store.record_router_queue(
+                    f"{source_device_id}/{source_port_name}",
+                    value,
+                    enqueued=False,
+                    queue_size=queue_size,
+                )
             return 0
 
     def get_stats(self) -> Dict[str, Any]:

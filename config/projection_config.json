@@ -39,6 +39,21 @@
           "enabled": false,
           "alias": null,
           "description": null
+        },
+        "create_pattern": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "execute_pattern": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "list_patterns": {
+          "enabled": true,
+          "alias": null,
+          "description": null
         }
       }
     },
@@ -100,6 +115,37 @@
           "description": null
         },
         "slot_status": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        }
+      }
+    },
+    "dev-D3A7C4": {
+      "enabled": true,
+      "device_alias": null,
+      "tools": {
+        "create_pattern": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "change_slot": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "slot_status": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "express_emotion": {
+          "enabled": true,
+          "alias": null,
+          "description": null
+        },
+        "read_temperature_humidity": {
           "enabled": true,
           "alias": null,
           "description": null

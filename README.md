@@ -59,12 +59,45 @@ Modify Claude Desktop's MCP configuration file to connect to HAMPTER.
 }
 ```
 
-> **Note:** `command` is the path to `npx`. Windows requires absolute path.  
-> `http://localhost:8083/sse/sse` is HAMPTER's MCP SSE endpoint.
+> **Note:** `command` is the path to `npx`. Windows requires absolute path.
+> `http://localhost:8083/sse/sse` is HAMPTER's MCP SSE endpoint for Claude Desktop via `@anthropic-ai/mcp-proxy`.
 
 ### 3. Restart Claude Desktop
 
 After saving the config, restart Claude Desktop. You should see HAMPTER tools available.
+
+---
+
+## ChatGPT / OpenAI MCP
+
+HAMPTER now exposes a **Streamable HTTP** MCP endpoint for ChatGPT/OpenAI:
+
+- Local endpoint: `http://localhost:8083/mcp`
+- Recommended public endpoint: `https://your-domain.example/mcp`
+
+Important limitations:
+
+- **ChatGPT cannot connect directly to `localhost` MCP servers.**
+- To use HAMPTER from ChatGPT, you must expose the bridge on a **public HTTPS URL**.
+- Claude Desktop can use the local SSE endpoint through `mcp-proxy`, which is why it works even when ChatGPT does not.
+
+Recommended deployment flow:
+
+1. Run HAMPTER bridge on a reachable host or tunnel it with a public HTTPS URL.
+2. Confirm the MCP endpoint is reachable at `/mcp`.
+3. Register that public HTTPS endpoint in ChatGPT/OpenAI as your remote MCP server.
+
+Quick checks:
+
+```bash
+curl http://localhost:8083/healthz
+curl http://localhost:8083/
+```
+
+The root endpoint should advertise:
+
+- `streamable_http: /mcp`
+- `sse: /sse`
 
 ---
 
@@ -156,6 +189,22 @@ Connect **sensor outputs, states, and values** between devices.
 
 - **OutPort**: Outputs values (sensor readings, states)
 - **InPort**: Receives values from other devices
+
+Port metadata is announced for both MCP and routing:
+- `description`: semantic meaning of the port
+- `unit`: value unit such as `celsius`, `percent`
+- `expected_range`: LLM-facing recommended range
+- `hard_limits`: device-enforced safety limits
+- `out_of_range_policy`: `allow`, `clamp`, or `reject`
+- `default_value`: initial/default sink value when relevant
+- `step`: recommended resolution
+
+Module authors can use the SDK helpers directly:
+```cpp
+reg.addInPort("var_a", "Primary modulation input", 0.0f, 1.0f, 0.0f);
+reg.addInPort("servo_target", "Servo target angle", 0.0f, 180.0f, 90.0f, "deg", "clamp");
+reg.addOutPort("temperature_c", "Ambient temperature", "celsius", -20.0f, 60.0f, 1000, read_temperature, 0.1f);
+```
 
 Example: Connect impact sensor → LED brightness
 ```

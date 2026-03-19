@@ -23,6 +23,15 @@ class BridgeAPIClient:
         except Exception as e:
             log(f"[BRIDGE_API] Error getting ports: {e}")
             return {"devices": [], "outports": [], "inports": []}
+
+    def get_port_debug(self, limit: int = 50) -> Dict[str, Any]:
+        try:
+            response = requests.get(f"{self.base_url}/port-debug", params={"limit": limit}, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            log(f"[BRIDGE_API] Error getting port debug: {e}")
+            return {"router_stats": {}, "snapshot": {"latest_outports": [], "latest_inports": [], "recent_events": []}}
     
     def get_routing(self) -> Dict[str, Any]:
         try:

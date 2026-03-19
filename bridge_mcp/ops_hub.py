@@ -15,6 +15,7 @@ class HampterOpsHub:
         virtual_tool_store,
         virtual_tool_executor,
         port_store,
+        port_router,
         execute_device_tool: Callable[[str, str, Dict[str, Any]], tuple[bool, Dict[str, Any]]],
         sync_dynamic_tools: Callable[[], None],
         sync_virtual_tools: Callable[[], None],
@@ -26,6 +27,7 @@ class HampterOpsHub:
         self.virtual_tool_store = virtual_tool_store
         self.virtual_tool_executor = virtual_tool_executor
         self.port_store = port_store
+        self.port_router = port_router
         self.execute_device_tool = execute_device_tool
         self.sync_dynamic_tools = sync_dynamic_tools
         self.sync_virtual_tools = sync_virtual_tools
@@ -284,6 +286,15 @@ class HampterOpsHub:
             if not include_details:
                 payload["devices"] = [{"device_id": d.get("device_id"), "online": d.get("online", False)} for d in devices]
             return payload
+
+        if section == "ports":
+            return {
+                "ok": True,
+                "section": section,
+                "router_stats": self.port_router.get_stats() if self.port_router else {},
+                "snapshot": self.port_store.get_debug_snapshot(limit=200 if include_details else 50),
+                "timestamp": now_iso(),
+            }
 
         return self._err("invalid_section", f"unsupported debug section '{section}'")
 

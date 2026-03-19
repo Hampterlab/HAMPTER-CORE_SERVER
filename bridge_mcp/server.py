@@ -1,7 +1,9 @@
 import json
+import os
 import threading
 from typing import List, Union, Any, Dict, Set
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ImageContent, TextContent, Resource
 
 from .utils import log, convert_response_to_content_list, json_schema_to_pydantic_model
@@ -14,9 +16,9 @@ from .ops_hub import HampterOpsHub
 from port_routing import PortStore, RoutingMatrix
 
 class BridgeServer:
-    def __init__(self, 
-                 device_store: DeviceStore, 
-                 projection_store: ToolProjectionStore, 
+    def __init__(self,
+                 device_store: DeviceStore,
+                 projection_store: ToolProjectionStore,
                  tool_registry: DynamicToolRegistry,
                  cmd_waiter: CommandWaiter,
                  port_store: PortStore,
@@ -26,7 +28,7 @@ class BridgeServer:
                  ipc_agent=None,
                  virtual_tool_store=None,
                  virtual_tool_executor=None):
-        self.mcp = FastMCP("bridge-mcp")
+        self.mcp = self._create_mcp_server()
         self.device_store = device_store
         self.projection_store = projection_store
         self.tool_registry = tool_registry
@@ -38,6 +40,7 @@ class BridgeServer:
         self.ipc_agent = ipc_agent
         self.virtual_tool_store = virtual_tool_store
         self.virtual_tool_executor = virtual_tool_executor
+        self.core_tools_only = os.getenv("MCP_CORE_TOOLS_ONLY", "1") != "0"
         self._registered_virtual_tools = set()  # Track registered virtual tool names
         self._dynamic_tool_names_by_device: Dict[str, Set[str]] = {}
         self._sync_lock = threading.Lock()
@@ -48,6 +51,7 @@ class BridgeServer:
             virtual_tool_store=self.virtual_tool_store,
             virtual_tool_executor=self.virtual_tool_executor,
             port_store=self.port_store,
+            port_router=self.port_router,
             execute_device_tool=self._execute_device_tool_raw,
             sync_dynamic_tools=self.register_all_announced_devices,
             sync_virtual_tools=self.register_virtual_tools,
@@ -60,6 +64,24 @@ class BridgeServer:
         # Register callbacks for device lifecycle changes.
         self.device_store.register_on_announce_callback(self.on_device_announced)
         self.device_store.register_on_status_callback(self.on_device_status_updated)
+
+    def _create_mcp_server(self) -> FastMCP:
+        """
+        Prefer stateless Streamable HTTP with JSON responses for remote MCP
+        clients such as ChatGPT, while keeping compatibility with older SDKs.
+        """
+        try:
+            return FastMCP(
+                "bridge-mcp",
+                stateless_http=True,
+                json_response=True,
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False,
+                ),
+            )
+        except TypeError:
+            log("[MCP] FastMCP does not support stateless_http/json_response; using legacy initialization")
+            return FastMCP("bridge-mcp")
 
     def _get_mcp_tools_dict(self):
         if hasattr(self.mcp, "_tools") and isinstance(self.mcp._tools, dict):
@@ -111,6 +133,40 @@ class BridgeServer:
             return
         if tool_name in tools_dict:
             tools_dict.pop(tool_name, None)
+
+    def _format_port_metadata(self, port: Dict[str, Any]) -> str:
+        parts: list[str] = []
+        description = port.get("description")
+        if description:
+            parts.append(f"desc={description}")
+        unit = port.get("unit")
+        if unit:
+            parts.append(f"unit={unit}")
+
+        expected = port.get("expected_range") or {}
+        if expected:
+            parts.append(
+                f"expected={expected.get('min', '-')}..{expected.get('max', '-')}"
+            )
+
+        hard_limits = port.get("hard_limits") or {}
+        if hard_limits:
+            parts.append(
+                f"hard={hard_limits.get('min', '-')}..{hard_limits.get('max', '-')}"
+            )
+
+        if "default_value" in port:
+            parts.append(f"default={port.get('default_value')}")
+
+        policy = port.get("out_of_range_policy")
+        if policy:
+            parts.append(f"policy={policy}")
+
+        step = port.get("step")
+        if step is not None:
+            parts.append(f"step={step}")
+
+        return ", ".join(parts)
 
     def _execute_device_tool_raw(self, device_id: str, tool: str, args: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
         if self.command_service:
@@ -232,21 +288,22 @@ class BridgeServer:
             )
 
     def setup_tools(self):
-        @self.mcp.tool()
-        def invoke(device_id: str, tool: str, args: dict | None = None) -> List[Union[ImageContent, TextContent]]:
-            """Generic tool invoker (fallback for any device tool) - uses original tool names"""
-            args = args or {}
-            
-            d = self.device_store.get(device_id)
-            if d and not d.get("online", False):
-                return [TextContent(type="text", text=f"Error: Device {device_id} is offline")]
+        if not self.core_tools_only:
+            @self.mcp.tool()
+            def invoke(device_id: str, tool: str, args: dict | None = None) -> List[Union[ImageContent, TextContent]]:
+                """Generic tool invoker (fallback for any device tool) - uses original tool names"""
+                args = args or {}
 
-            ok, resp = self._execute_device_tool_raw(device_id, tool, args)
-            if not ok:
-                error_msg = resp.get("error", {}).get("message", "Unknown error")
-                return [TextContent(type="text", text=f"Error: {error_msg}")]
-            
-            return convert_response_to_content_list(resp)
+                d = self.device_store.get(device_id)
+                if d and not d.get("online", False):
+                    return [TextContent(type="text", text=f"Error: Device {device_id} is offline")]
+
+                ok, resp = self._execute_device_tool_raw(device_id, tool, args)
+                if not ok:
+                    error_msg = resp.get("error", {}).get("message", "Unknown error")
+                    return [TextContent(type="text", text=f"Error: {error_msg}")]
+
+                return convert_response_to_content_list(resp)
 
         @self.mcp.tool()
         def hampter_ops(
@@ -267,10 +324,13 @@ class BridgeServer:
         @self.mcp.tool()
         def hampter_debug(section: str = "summary", include_details: bool = False) -> List[TextContent]:
             """
-            Runtime diagnostics. section: summary|validate|state
+            Runtime diagnostics. section: summary|validate|state|ports
             """
             payload = self.ops_hub.debug(section=section, include_details=include_details)
             return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+        if self.core_tools_only:
+            return
 
         @self.mcp.tool()
         def list_devices(show_offline: bool = False) -> List[TextContent]:
@@ -334,7 +394,7 @@ class BridgeServer:
 
         @self.mcp.tool()
         def list_ports() -> List[TextContent]:
-            """List all device ports (outports and inports) with routing info."""
+            """List all device ports with routing info and LLM-facing metadata such as ranges, units, defaults, and limits."""
             outports = self.port_store.get_all_outports()
             inports = self.port_store.get_all_inports()
             connections = self.routing_matrix.get_all_connections()
@@ -342,18 +402,24 @@ class BridgeServer:
             lines = [f"=== Ports Overview ==="]
             lines.append(f"OutPorts: {len(outports)}, InPorts: {len(inports)}, Connections: {len(connections)}")
             lines.append("")
-            
+
             lines.append("--- OutPorts (Sources) ---")
             for p in outports:
                 port_id = p['port_id']
                 targets = self.routing_matrix.get_targets_for_source(port_id)
                 target_count = len(targets)
                 lines.append(f"• {port_id} ({p.get('data_type', '?')}) → {target_count} connections")
-            
+                meta = self._format_port_metadata(p)
+                if meta:
+                    lines.append(f"  {meta}")
+
             lines.append("")
             lines.append("--- InPorts (Sinks) ---")
             for p in inports:
                 lines.append(f"• {p['port_id']} ({p.get('data_type', '?')})")
+                meta = self._format_port_metadata(p)
+                if meta:
+                    lines.append(f"  {meta}")
             
             return [TextContent(type="text", text="\n".join(lines))]
 
@@ -398,11 +464,13 @@ class BridgeServer:
             target_exists = any(p['port_id'] == target for p in inports)
             
             warnings = []
+            source_port = next((p for p in outports if p['port_id'] == source), None)
+            target_port = next((p for p in inports if p['port_id'] == target), None)
             if not source_exists:
                 warnings.append(f"Warning: Source '{source}' not found in announced outports")
             if not target_exists:
                 warnings.append(f"Warning: Target '{target}' not found in announced inports")
-            
+
             # 연결 생성
             try:
                 conn = self.routing_matrix.connect(source, target, transform, enabled=True, description=description)
@@ -410,6 +478,14 @@ class BridgeServer:
                 return [TextContent(type="text", text=f"✗ Invalid connection: {e}")]
             
             result_lines = [f"✓ Connected: {source} → {target}"]
+            if source_port:
+                source_meta = self._format_port_metadata(source_port)
+                if source_meta:
+                    result_lines.append(f"  Source meta: {source_meta}")
+            if target_port:
+                target_meta = self._format_port_metadata(target_port)
+                if target_meta:
+                    result_lines.append(f"  Target meta: {target_meta}")
             if transform:
                 result_lines.append(f"  Transform: {json.dumps(transform)}")
             if description:

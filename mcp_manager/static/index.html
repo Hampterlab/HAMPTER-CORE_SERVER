@@ -30,6 +30,7 @@
             <button class="tab active" onclick="switchTab('connections')">Connections</button>
             <button class="tab" onclick="switchTab('tools')">Tool Projection</button>
             <button class="tab" onclick="switchTab('matrix')">Routing Matrix</button>
+            <button class="tab" onclick="switchTab('ports')">Port Debug</button>
             <button class="tab" onclick="switchTab('virtual')">Virtual Tools</button>
         </nav>
 
@@ -127,6 +128,65 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Port Debug Tab -->
+                <section id="tab-ports" class="tab-content">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <h2>Port Debug</h2>
+                                <p>Watch recent outport values, bridge-side inport dispatch, and routing events.</p>
+                            </div>
+                            <div class="panel-actions">
+                                <input type="number" id="port-debug-limit" min="10" max="500" step="10" value="50">
+                                <button class="btn" onclick="loadPortDebugData()">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div class="stats-grid" id="port-debug-stats">
+                                <div class="stat-card">
+                                    <div class="stat-value" id="port-queued">0</div>
+                                    <div class="stat-label">Queued</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value" id="port-processed">0</div>
+                                    <div class="stat-label">Processed</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value" id="port-routed">0</div>
+                                    <div class="stat-label">Routed</div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-value" id="port-dropped">0</div>
+                                    <div class="stat-label">Dropped</div>
+                                </div>
+                            </div>
+                            <div class="port-debug-grid">
+                                <section class="debug-card">
+                                    <div class="debug-card-head">
+                                        <h3>Latest OutPorts</h3>
+                                        <span id="port-debug-out-count" class="debug-count">0</span>
+                                    </div>
+                                    <div id="port-debug-outports" class="debug-list">Loading...</div>
+                                </section>
+                                <section class="debug-card">
+                                    <div class="debug-card-head">
+                                        <h3>InPort Dispatch</h3>
+                                        <span id="port-debug-in-count" class="debug-count">0</span>
+                                    </div>
+                                    <div id="port-debug-inports" class="debug-list">Loading...</div>
+                                </section>
+                            </div>
+                            <section class="debug-card">
+                                <div class="debug-card-head">
+                                    <h3>Recent Events</h3>
+                                    <span id="port-debug-event-count" class="debug-count">0</span>
+                                </div>
+                                <div id="port-debug-events" class="debug-events">Loading...</div>
+                            </section>
                         </div>
                     </div>
                 </section>
